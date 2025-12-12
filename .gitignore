@@ -205,3 +205,49 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE / Editor
+.vscode/
+.idea/
+*.sublime-workspace
+*.sublime-project
+
+# Large data / model artifacts (do NOT commit large binaries)
+*.h5
+*.hdf5
+*.pt
+*.pth
+*.ckpt
+*.onnx
+*.tflite
+# common model/weights folders
+models/
+weights/
+checkpoints/
+saved_models/
+
+# Large pickles / binary datasets
+*.pickle
+*.pkl
+data*.pkl
+data*.pickle
+
+# Secrets / credentials
+credentials.json
+*.pem
+*.key
+secrets.yaml
+config.ini
+
+# Git LFS pointer files (optional)
+*.zip
+*.tar.gz
+*.tar
+*.tgz
+
+# Misc
+pip-wheel-metadata/
