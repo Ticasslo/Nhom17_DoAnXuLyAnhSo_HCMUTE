@@ -13,7 +13,7 @@ Quy trình:
 3. Duyệt qua từng ảnh trong dataset
 4. Extract landmarks và normalize
 5. Augmentation cho symmetric gestures (flip ảnh)
-6. Lưu vào CSV với 42 features + label + has_hand + handedness
+6. Lưu vào CSV với NUM_FEATURES features (42 landmarks + 2 orientation) + label + has_hand + handedness
 """
 
 import os
@@ -48,6 +48,17 @@ SYMMETRIC_GESTURES = {
 
 # Các gesture còn lại là ASYMMETRIC (A_LH_*, A_RH_*)
 # Không flip vì tay trái và tay phải có ý nghĩa khác nhau
+
+# ===============================================================
+# CONSTANTS
+# ===============================================================
+NUM_LANDMARKS = 21  # Số lượng landmarks cho mỗi hand
+# MCP (Metacarpophalangeal) joints: Thumb=2, Index=5, Middle=9, Ring=13, Pinky=17
+# MCP đại diện cho hướng của ngón tay, không bị ảnh hưởng bởi việc gập ngón
+# Dùng trung bình của 4 ngón (Index, Middle, Ring, Pinky) để đại diện hướng chính của bàn tay
+# Trừ thumb vì thumb có hướng khác (vuông góc với các ngón khác)
+FINGER_MCP_INDICES = [5, 9, 13, 17]  # Index, Middle, Ring, Pinky MCPs
+NUM_FEATURES = 44  # 42 landmarks + 2 orientation
 
 # ===============================================================
 # VALIDATION: Kiểm tra handedness có khớp với label không
@@ -91,15 +102,19 @@ def validate_handedness(gesture_folder, detected_handedness):
 
 def normalize_features(landmarks_array):
     """
-    Normalize landmarks: relative + scale normalization
+    Normalize landmarks: relative + scale normalization + orientation features
+    PHẢI GIỐNG HỆT với hàm normalize_features() trong tkinter_template_detection_classification.py!
     
     Input: landmarks_array shape (21, 2) với (x, y) [đã normalized [0,1] từ MediaPipe]
-    Output: 42 features [x0, y0, x1, y1, ..., x20, y20] đã normalize
+    Output: NUM_FEATURES features [x0, y0, x1, y1, ..., x20, y20, orientation_x, orientation_y] đã normalize
     
     Quy trình:
     1. Relative normalization về wrist (landmark 0)
     2. Scale normalization (chia cho max absolute value)
-    3. Flatten thành 42 features
+    3. Tính orientation vector (từ wrist đến trung bình của 4 MCP joints: Index, Middle, Ring, Pinky)
+    4. Flatten thành NUM_FEATURES features (42 landmarks + 2 orientation)
+    
+    LƯU Ý: Thêm orientation features để phân biệt hướng (lên/xuống/trái/phải)
     """
     landmarks = np.asarray(landmarks_array, dtype=np.float32)
     x_coords = landmarks[:, 0]
@@ -118,11 +133,50 @@ def normalize_features(landmarks_array):
     else:
         normalized_x, normalized_y = relative_x, relative_y
     
-    # Flatten thành 42 features
-    feats = np.empty(42, dtype=np.float32)
-    for i in range(21):
+    # ========== ORIENTATION FEATURES ==========
+    # Tính vector hướng từ wrist (0) đến TRUNG BÌNH của các MCP joints
+    # MCP (Metacarpophalangeal joint) = điểm gốc của ngón tay
+    # 
+    # TẠI SAO DÙNG TRUNG BÌNH CỦA 4 MCPs (Index, Middle, Ring, Pinky)?
+    # - Đại diện cho HƯỚNG CHÍNH của bàn tay, không phụ thuộc vào 1 ngón
+    # - Giải quyết mâu thuẫn: 4 ngón hướng lên nhưng ngón trỏ chỉ phải
+    #   → Trung bình sẽ là "lên trên" (đúng với hướng chính của bàn tay)
+    # - Ổn định hơn dùng 1 ngón, chính xác hơn tip
+    # - Trừ thumb vì thumb có hướng khác (vuông góc với các ngón khác)
+    # 
+    # Ví dụ 1: Tay chỉ sang phải, ngón trỏ gập vuông góc lên trên
+    # - Index MCP: orientation_x > 0 (phải)
+    # - Trung bình 4 MCPs: orientation_x > 0 (phải) ✅ ĐÚNG
+    # 
+    # Ví dụ 2: 4 ngón hướng lên, ngón trỏ chỉ phải
+    # - Index MCP: orientation_x > 0 (phải)
+    # - Middle/Ring/Pinky MCPs: orientation_y < 0 (lên)
+    # - Trung bình: orientation_y < 0 (lên) ✅ ĐÚNG (hướng chính của bàn tay)
+    
+    # Tính trung bình của 4 MCP joints (Index, Middle, Ring, Pinky)
+    mcp_x_avg = np.mean([normalized_x[i] for i in FINGER_MCP_INDICES])
+    mcp_y_avg = np.mean([normalized_y[i] for i in FINGER_MCP_INDICES])
+    
+    orientation_x = mcp_x_avg
+    orientation_y = mcp_y_avg
+    
+    # Normalize orientation vector (đảm bảo trong khoảng [-1, 1])
+    orientation_magnitude = np.sqrt(orientation_x**2 + orientation_y**2)
+    if orientation_magnitude > 0:
+        orientation_x = orientation_x / orientation_magnitude
+        orientation_y = orientation_y / orientation_magnitude
+    # Nếu magnitude = 0 (không có hướng), giữ nguyên (0, 0)
+    # ==============================================
+    
+    # Flatten thành NUM_FEATURES features (42 landmarks + 2 orientation)
+    feats = np.empty(NUM_FEATURES, dtype=np.float32)
+    for i in range(NUM_LANDMARKS):
         feats[2*i] = float(normalized_x[i])
         feats[2*i+1] = float(normalized_y[i])
+    
+    # Thêm orientation features ở cuối (indices 42, 43)
+    feats[NUM_LANDMARKS * 2] = float(orientation_x)  # Index 42
+    feats[NUM_LANDMARKS * 2 + 1] = float(orientation_y)  # Index 43
     
     return feats
 
@@ -189,11 +243,13 @@ handedness_flags = []
 # Đếm số lượng ảnh đã xử lý
 total_images = 0
 processed_images = 0
-skipped_images = 0
+skipped_images = 0  # Ảnh bị skip hoàn toàn (không xử lý được)
+augmentation_failed_count = 0  # Augmentation fail (ảnh gốc OK nhưng flip fail)
 handedness_mismatch_count = 0  # Đếm số lượng mismatch
 handedness_mismatch_details = []  # Chi tiết các mismatch
 # Log các ảnh bị skip để debug (in hết ra console, không ghi file)
 skip_log = []
+augmentation_failed_log = []  # Log các augmentation failures
 
 # Duyệt qua từng gesture folder
 gesture_folders = sorted([f for f in os.listdir(DATASET_DIR) 
@@ -252,8 +308,8 @@ for gesture_folder in gesture_folders:
                 skipped_images += 1
                 continue
             
-            # Không tay → gán vector zero 42 chiều + has_hand=0
-            features = [0.0] * 42
+            # Không tay → gán vector zero NUM_FEATURES chiều + has_hand=0
+            features = [0.0] * NUM_FEATURES
             data.append(features)
             labels.append(gesture_folder)
             has_hand_flags.append(0)
@@ -310,6 +366,15 @@ for gesture_folder in gesture_folders:
         # Extract + normalize từ ảnh gốc
         # Convert landmarks -> ndarray (21,2) rồi normalize
         landmarks_array = np.array([[lm.x, lm.y] for lm in hand_landmarks], dtype=np.float32)
+        
+        # VALIDATION: Kiểm tra số lượng landmarks
+        if len(landmarks_array) != NUM_LANDMARKS:
+            msg = f"{gesture_folder}/{img_file}: landmarks != {NUM_LANDMARKS} (got {len(landmarks_array)})"
+            skip_log.append(msg)
+            print(f"    [SKIP] {msg}")
+            skipped_images += 1
+            continue
+        
         features = normalize_features(landmarks_array)
         
         data.append(features.tolist())
@@ -323,22 +388,58 @@ for gesture_folder in gesture_folders:
         # ========== DATA AUGMENTATION ==========
         # CHỈ ÁP DỤNG CHO SYMMETRIC GESTURES
         if is_symmetric:
-            # Flip landmarks thủ công từ ảnh gốc (đảm bảo 100% thành công)
-            # Vì ảnh gốc đã detect được tay → flip landmarks sẽ luôn thành công
-            # Flip tọa độ X: x_flipped = 1.0 - x_original (mirror theo trục dọc)
-            landmarks_array_flip = landmarks_array.copy()
-            landmarks_array_flip[:, 0] = 1.0 - landmarks_array_flip[:, 0]  # Flip X
+            # Flip ảnh horizontal (mirror theo trục dọc)
+            img_flipped = cv2.flip(img, 1)  # 1 = horizontal flip
             
-            # Normalize lại sau khi flip (quan trọng để đảm bảo tính nhất quán)
-            features_flipped = normalize_features(landmarks_array_flip)
+            # Convert BGR → RGB (MediaPipe cần RGB)
+            img_rgb_flipped = cv2.cvtColor(img_flipped, cv2.COLOR_BGR2RGB)
             
-            # Flip handedness: Left ↔ Right
-            if handedness_label == "Left":
-                handedness_label_flip = "Right"
-            elif handedness_label == "Right":
-                handedness_label_flip = "Left"
-            else:
-                handedness_label_flip = handedness_label
+            # Tạo MediaPipe Image object cho ảnh đã flip
+            mp_image_flipped = mp.Image(image_format=mp.ImageFormat.SRGB, data=img_rgb_flipped)
+            
+            # Detect lại trên ảnh đã flip
+            detection_result_flipped = landmarker.detect(mp_image_flipped)
+            
+            # VALIDATION: Kiểm tra kết quả detection trên ảnh flip
+            if not detection_result_flipped.hand_landmarks or len(detection_result_flipped.hand_landmarks) == 0:
+                # Không detect được tay trên ảnh flip → skip augmentation cho ảnh này
+                # (chấp nhận mất một số samples để đảm bảo tính realistic)
+                # LƯU Ý: Ảnh gốc đã được xử lý thành công, chỉ augmentation fail
+                augmentation_failed_count += 1
+                augmentation_failed_log.append(f"{gesture_folder}/{img_file}: flip augmentation failed (0 tay)")
+                continue
+            
+            if len(detection_result_flipped.hand_landmarks) != 1:
+                # Detect được nhiều tay hoặc không đúng 1 tay → skip
+                # LƯU Ý: Ảnh gốc đã được xử lý thành công, chỉ augmentation fail
+                augmentation_failed_count += 1
+                augmentation_failed_log.append(f"{gesture_folder}/{img_file}: flip augmentation failed ({len(detection_result_flipped.hand_landmarks)} tay)")
+                continue
+            
+            # Extract landmarks từ kết quả detection trên ảnh flip
+            hand_landmarks_flipped = detection_result_flipped.hand_landmarks[0]
+            landmarks_array_flipped = np.array([[lm.x, lm.y] for lm in hand_landmarks_flipped], dtype=np.float32)
+            
+            # VALIDATION: Kiểm tra số lượng landmarks
+            if len(landmarks_array_flipped) != NUM_LANDMARKS:
+                # LƯU Ý: Ảnh gốc đã được xử lý thành công, chỉ augmentation fail
+                augmentation_failed_count += 1
+                augmentation_failed_log.append(f"{gesture_folder}/{img_file}: flip augmentation failed (landmarks != {NUM_LANDMARKS})")
+                continue
+            
+            # Normalize features từ landmarks đã detect trên ảnh flip
+            features_flipped = normalize_features(landmarks_array_flipped)
+            
+            # Lấy handedness từ kết quả detection trên ảnh flip
+            handedness_label_flip = None
+            if detection_result_flipped.handedness and len(detection_result_flipped.handedness) > 0:
+                entry = detection_result_flipped.handedness[0]
+                if isinstance(entry, (list, tuple)) and len(entry) > 0:
+                    cat = entry[0]
+                else:
+                    cat = entry
+                name = getattr(cat, "category_name", None) or getattr(cat, "label", None) or "Hand"
+                handedness_label_flip = name
             
             # Lưu augmented sample với CÙNG label
             data.append(features_flipped.tolist())
@@ -348,8 +449,8 @@ for gesture_folder in gesture_folders:
             gesture_samples += 1  # Đếm thêm 1 sample từ augmentation
             gesture_augmented_samples += 1
         
-        # Hiển thị progress mỗi 100 ảnh
-        if img_idx % 100 == 0:
+        # Hiển thị progress mỗi 100 ảnh hoặc ảnh cuối cùng
+        if img_idx % 100 == 0 or img_idx == len(image_files):
             print(f"    Progress: {img_idx}/{len(image_files)} ảnh đã xử lý...")
     
     # Thông báo kết quả cho gesture này
@@ -367,8 +468,8 @@ print(f"Dang luu data vao CSV...")
 print(f"{'='*60}\n")
 
 # Tạo DataFrame
-feat_cols = [f'feat_{i}' for i in range(42)]
-df = pd.DataFrame(data, columns=feat_cols)  # 42 cột features (đã normalize)
+feat_cols = [f'feat_{i}' for i in range(NUM_FEATURES)]  # NUM_FEATURES: 42 landmarks + 2 orientation
+df = pd.DataFrame(data, columns=feat_cols)  # NUM_FEATURES cột features (đã normalize)
 df['label'] = labels
 df['has_hand'] = has_hand_flags
 df['handedness'] = handedness_flags
@@ -387,7 +488,9 @@ print(f"{'='*60}")
 print(f"[STATS] Thong ke:")
 print(f"  - Tong so anh: {total_images}")
 print(f"  - Da xu ly: {processed_images} anh")
-print(f"  - Da bo qua: {skipped_images} anh")
+print(f"  - Da bo qua (skip hoan toan): {skipped_images} anh")
+if augmentation_failed_count > 0:
+    print(f"  - ⚠️  Augmentation failed: {augmentation_failed_count} lan (anh goc OK nhung flip fail)")
 print(f"  - Tong so samples: {len(data)}")
 print(f"  - So gesture types: {len(set(labels))}")
 print(f"  - Unique labels: {sorted(set(labels))}")
@@ -411,8 +514,15 @@ if handedness_mismatch_count > 0:
 
 # In toàn bộ danh sách ảnh bị skip
 if skip_log:
-    print(f"\n[WARNING] Tổng số ảnh bị skip: {len(skip_log)}")
+    print(f"\n[WARNING] Tổng số ảnh bị skip (skip hoàn toàn): {len(skip_log)}")
     for line in skip_log:
+        print(f"  - {line}")
+
+# In danh sách augmentation failures
+if augmentation_failed_log:
+    print(f"\n[INFO] Tổng số augmentation failures: {len(augmentation_failed_log)}")
+    print(f"  (Ảnh gốc đã được xử lý thành công, chỉ augmentation fail)")
+    for line in augmentation_failed_log:
         print(f"  - {line}")
 
 print(f"\n{'='*60}\n")
