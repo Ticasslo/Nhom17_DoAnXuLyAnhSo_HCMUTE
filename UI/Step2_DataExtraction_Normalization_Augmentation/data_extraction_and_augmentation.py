@@ -13,7 +13,7 @@ Quy trình:
 3. Duyệt qua từng ảnh trong dataset
 4. Extract landmarks và normalize
 5. Augmentation cho symmetric gestures (flip ảnh)
-6. Lưu vào CSV với NUM_FEATURES features (42 landmarks + 2 orientation) + label + has_hand + handedness
+6. Lưu vào CSV với NUM_FEATURES features (42 landmarks + 2 Y_hand + 2 X_hand) + label + has_hand + handedness
 """
 
 import os
@@ -58,7 +58,9 @@ NUM_LANDMARKS = 21  # Số lượng landmarks cho mỗi hand
 # Dùng trung bình của 4 ngón (Index, Middle, Ring, Pinky) để đại diện hướng chính của bàn tay
 # Trừ thumb vì thumb có hướng khác (vuông góc với các ngón khác)
 FINGER_MCP_INDICES = [5, 9, 13, 17]  # Index, Middle, Ring, Pinky MCPs
-NUM_FEATURES = 44  # 42 landmarks + 2 orientation
+INDEX_MCP_IDX = 5   # Index finger MCP landmark index
+PINKY_MCP_IDX = 17  # Pinky finger MCP landmark index
+NUM_FEATURES = 46  # 42 landmarks (21 * 2) + 2 Y_hand + 2 X_hand = 46 features
 
 # ===============================================================
 # VALIDATION: Kiểm tra handedness có khớp với label không
@@ -106,13 +108,13 @@ def normalize_features(landmarks_array):
     PHẢI GIỐNG HỆT với hàm normalize_features() trong tkinter_template_detection_classification.py!
     
     Input: landmarks_array shape (21, 2) với (x, y) [đã normalized [0,1] từ MediaPipe]
-    Output: NUM_FEATURES features [x0, y0, x1, y1, ..., x20, y20, orientation_x, orientation_y] đã normalize
+    Output: NUM_FEATURES features [x0, y0, x1, y1, ..., x20, y20, y_hand_x, y_hand_y, x_hand_x, x_hand_y] đã normalize
     
     Quy trình:
     1. Relative normalization về wrist (landmark 0)
     2. Scale normalization (chia cho max absolute value)
     3. Tính orientation vector (từ wrist đến trung bình của 4 MCP joints: Index, Middle, Ring, Pinky)
-    4. Flatten thành NUM_FEATURES features (42 landmarks + 2 orientation)
+    4. Flatten thành NUM_FEATURES features (42 landmarks + 2 Y_hand + 2 X_hand)
     
     LƯU Ý: Thêm orientation features để phân biệt hướng (lên/xuống/trái/phải)
     """
@@ -133,50 +135,90 @@ def normalize_features(landmarks_array):
     else:
         normalized_x, normalized_y = relative_x, relative_y
     
-    # ========== ORIENTATION FEATURES ==========
-    # Tính vector hướng từ wrist (0) đến TRUNG BÌNH của các MCP joints
-    # MCP (Metacarpophalangeal joint) = điểm gốc của ngón tay
+    # ========== ORIENTATION FEATURES (HAND LOCAL SPACE) ==========
+    # Tính 2 trục cơ bản của bàn tay để phân biệt hướng và rotation
     # 
-    # TẠI SAO DÙNG TRUNG BÌNH CỦA 4 MCPs (Index, Middle, Ring, Pinky)?
-    # - Đại diện cho HƯỚNG CHÍNH của bàn tay, không phụ thuộc vào 1 ngón
-    # - Giải quyết mâu thuẫn: 4 ngón hướng lên nhưng ngón trỏ chỉ phải
-    #   → Trung bình sẽ là "lên trên" (đúng với hướng chính của bàn tay)
-    # - Ổn định hơn dùng 1 ngón, chính xác hơn tip
-    # - Trừ thumb vì thumb có hướng khác (vuông góc với các ngón khác)
+    # QUY TRÌNH:
+    # 1. Dựng hệ trục bàn tay (hand local coordinate system):
+    #    - Y_hand = wrist → mean(MCPs) (trục DỌC của bàn tay)
+    #    - X_hand = index_MCP → pinky_MCP (trục NGANG của bàn tay)
+    # 2. Normalize cả 2 trục thành unit vectors
+    # 3. Lưu vào features [indices 42-45] để model học
     # 
-    # Ví dụ 1: Tay chỉ sang phải, ngón trỏ gập vuông góc lên trên
-    # - Index MCP: orientation_x > 0 (phải)
-    # - Trung bình 4 MCPs: orientation_x > 0 (phải) ✅ ĐÚNG
+    # TẠI SAO CẦN CẢ 2 TRỤC?
+    # - CHỈ Y_hand: Phân biệt Up/Down/Left/Right nhưng KHÔNG biết rotation angle
+    # - CẢ Y_hand + X_hand: Phân biệt đầy đủ orientation 2D (hướng + rotation)
     # 
-    # Ví dụ 2: 4 ngón hướng lên, ngón trỏ chỉ phải
-    # - Index MCP: orientation_x > 0 (phải)
-    # - Middle/Ring/Pinky MCPs: orientation_y < 0 (lên)
-    # - Trung bình: orientation_y < 0 (lên) ✅ ĐÚNG (hướng chính của bàn tay)
+    # VÍ DỤ:
+    # - Thumbs Up thẳng: Y=(0,-1), X=(+1,0)
+    # - Thumbs Up xoay 45°: Y=(-0.7,-0.7), X=(+0.7,-0.7)
+    # → Model học được "Thumbs Up" bất kể rotation angle
+    # 
+    # LƯU Ý VỀ SYMMETRIC AUGMENTATION:
+    # - Khi flip ảnh (horizontal mirror), X_hand sẽ đổi dấu (mirror horizontal)
+    # - Model sẽ học CẢ 2 hướng X_hand cho symmetric gestures
+    # - Ví dụ: Thumbs Up có thể có X=(+1,0) hoặc X=(-1,0) sau augmentation
     
     # Tính trung bình của 4 MCP joints (Index, Middle, Ring, Pinky)
-    mcp_x_avg = np.mean([normalized_x[i] for i in FINGER_MCP_INDICES])
-    mcp_y_avg = np.mean([normalized_y[i] for i in FINGER_MCP_INDICES])
+    mcp_x_avg = np.mean(normalized_x[FINGER_MCP_INDICES])
+    mcp_y_avg = np.mean(normalized_y[FINGER_MCP_INDICES])
     
-    orientation_x = mcp_x_avg
-    orientation_y = mcp_y_avg
+    # Y_hand: vector từ wrist (0,0) đến mean(MCPs) - đây là hướng lên của bàn tay
+    y_hand_x = mcp_x_avg  # Wrist = (0,0) sau relative normalization
+    y_hand_y = mcp_y_avg
     
-    # Normalize orientation vector (đảm bảo trong khoảng [-1, 1])
-    orientation_magnitude = np.sqrt(orientation_x**2 + orientation_y**2)
-    if orientation_magnitude > 0:
-        orientation_x = orientation_x / orientation_magnitude
-        orientation_y = orientation_y / orientation_magnitude
-    # Nếu magnitude = 0 (không có hướng), giữ nguyên (0, 0)
+    # X_hand: vector từ index_MCP đến pinky_MCP - đây là hướng ngang của bàn tay
+    x_hand_x = normalized_x[PINKY_MCP_IDX] - normalized_x[INDEX_MCP_IDX]
+    x_hand_y = normalized_y[PINKY_MCP_IDX] - normalized_y[INDEX_MCP_IDX]
+    
+    # Normalize Y_hand trước (cần cho fallback X_hand)
+    y_hand_mag = np.sqrt(y_hand_x**2 + y_hand_y**2)
+    if y_hand_mag > 0:
+        y_hand_x_normalized = y_hand_x / y_hand_mag
+        y_hand_y_normalized = y_hand_y / y_hand_mag
+    else:
+        # Fallback: nếu không tính được Y_hand, dùng (0, -1) mặc định
+        y_hand_x_normalized = 0.0
+        y_hand_y_normalized = -1.0
+    
+    # Normalize X_hand
+    x_hand_mag = np.sqrt(x_hand_x**2 + x_hand_y**2)
+    if x_hand_mag > 0:
+        x_hand_x = x_hand_x / x_hand_mag
+        x_hand_y = x_hand_y / x_hand_mag
+    else:
+        # Fallback: nếu không tính được X_hand (2 MCPs trùng nhau), dùng vector vuông góc với Y_hand (đã normalize)
+        x_hand_x = -y_hand_y_normalized
+        x_hand_y = y_hand_x_normalized
+        x_hand_mag = np.sqrt(x_hand_x**2 + x_hand_y**2)
+        if x_hand_mag > 0:
+            x_hand_x = x_hand_x / x_hand_mag
+            x_hand_y = x_hand_y / x_hand_mag
+        else:
+            # Fallback cuối cùng: nếu vẫn không được, dùng (1, 0) mặc định
+            x_hand_x = 1.0
+            x_hand_y = 0.0
+    
+    # Lưu orientation vectors đã normalize vào features
+    # Y_hand: trục dọc của bàn tay (wrist → mean(MCPs)) - hướng lên/xuống
+    # X_hand: trục ngang của bàn tay (index_MCP → pinky_MCP) - hướng trái/phải + rotation
+    # Cả 2 đã normalize thành unit vectors → dùng trực tiếp
+    # Model tự học từ raw orientation values để phân biệt Up/Down/Left/Right + rotation angle
     # ==============================================
     
-    # Flatten thành NUM_FEATURES features (42 landmarks + 2 orientation)
+    # Flatten thành NUM_FEATURES features (42 landmarks + 2 Y_hand + 2 X_hand)
     feats = np.empty(NUM_FEATURES, dtype=np.float32)
     for i in range(NUM_LANDMARKS):
         feats[2*i] = float(normalized_x[i])
         feats[2*i+1] = float(normalized_y[i])
     
-    # Thêm orientation features ở cuối (indices 42, 43)
-    feats[NUM_LANDMARKS * 2] = float(orientation_x)  # Index 42
-    feats[NUM_LANDMARKS * 2 + 1] = float(orientation_y)  # Index 43
+    # Thêm Y_hand features (indices 42, 43) - đã normalize
+    feats[NUM_LANDMARKS * 2] = float(y_hand_x_normalized)  # Index 42: Y_hand X component
+    feats[NUM_LANDMARKS * 2 + 1] = float(y_hand_y_normalized)  # Index 43: Y_hand Y component
+    
+    # Thêm X_hand features (indices 44, 45) - đã normalize
+    feats[NUM_LANDMARKS * 2 + 2] = float(x_hand_x)  # Index 44: X_hand X component
+    feats[NUM_LANDMARKS * 2 + 3] = float(x_hand_y)  # Index 45: X_hand Y component
     
     return feats
 
@@ -387,6 +429,11 @@ for gesture_folder in gesture_folders:
         
         # ========== DATA AUGMENTATION ==========
         # CHỈ ÁP DỤNG CHO SYMMETRIC GESTURES
+        # Asymmetric gestures (A_LH_*, A_RH_*) KHÔNG được augment vì:
+        # - Tay trái và tay phải có ý nghĩa khác nhau
+        # - FanLeft/FanRight = ngón cái chỉ trái/phải (trục X)
+        # - Orientation tính từ 4 MCPs (trục Y) → không phản ánh đúng hướng của thumb
+        # - Vậy không cần quan tâm orientation khi augment (vì không augment asymmetric)
         if is_symmetric:
             # Flip ảnh horizontal (mirror theo trục dọc)
             img_flipped = cv2.flip(img, 1)  # 1 = horizontal flip
@@ -468,7 +515,7 @@ print(f"Dang luu data vao CSV...")
 print(f"{'='*60}\n")
 
 # Tạo DataFrame
-feat_cols = [f'feat_{i}' for i in range(NUM_FEATURES)]  # NUM_FEATURES: 42 landmarks + 2 orientation
+feat_cols = [f'feat_{i}' for i in range(NUM_FEATURES)]  # NUM_FEATURES: 42 landmarks + 2 Y_hand + 2 X_hand
 df = pd.DataFrame(data, columns=feat_cols)  # NUM_FEATURES cột features (đã normalize)
 df['label'] = labels
 df['has_hand'] = has_hand_flags
