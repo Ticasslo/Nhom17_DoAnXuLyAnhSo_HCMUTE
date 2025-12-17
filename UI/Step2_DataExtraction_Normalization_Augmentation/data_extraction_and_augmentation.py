@@ -171,33 +171,48 @@ def normalize_features(landmarks_array):
     x_hand_x = normalized_x[PINKY_MCP_IDX] - normalized_x[INDEX_MCP_IDX]
     x_hand_y = normalized_y[PINKY_MCP_IDX] - normalized_y[INDEX_MCP_IDX]
     
-    # Normalize Y_hand trước (cần cho fallback X_hand)
+    EPSILON = 1e-6  # Ngưỡng tối thiểu để tránh chia cho 0
+    
+    # Normalize Y_hand TRƯỚC (ưu tiên orientation) - đây là trục chính của bàn tay
     y_hand_mag = np.sqrt(y_hand_x**2 + y_hand_y**2)
-    if y_hand_mag > 0:
+    if y_hand_mag > EPSILON:
         y_hand_x_normalized = y_hand_x / y_hand_mag
         y_hand_y_normalized = y_hand_y / y_hand_mag
     else:
-        # Fallback: nếu không tính được Y_hand, dùng (0, -1) mặc định
+        # Fallback: nếu không tính được Y_hand (tất cả landmarks trùng nhau), dùng (0, -1) mặc định
         y_hand_x_normalized = 0.0
         y_hand_y_normalized = -1.0
     
-    # Normalize X_hand
+    # Normalize X_hand SAU (dựa trên Y_hand đã normalize)
     x_hand_mag = np.sqrt(x_hand_x**2 + x_hand_y**2)
-    if x_hand_mag > 0:
-        x_hand_x = x_hand_x / x_hand_mag
-        x_hand_y = x_hand_y / x_hand_mag
+    if x_hand_mag > EPSILON:
+        x_hand_x_normalized = x_hand_x / x_hand_mag
+        x_hand_y_normalized = x_hand_y / x_hand_mag
     else:
-        # Fallback: nếu không tính được X_hand (2 MCPs trùng nhau), dùng vector vuông góc với Y_hand (đã normalize)
-        x_hand_x = -y_hand_y_normalized
-        x_hand_y = y_hand_x_normalized
-        x_hand_mag = np.sqrt(x_hand_x**2 + x_hand_y**2)
-        if x_hand_mag > 0:
-            x_hand_x = x_hand_x / x_hand_mag
-            x_hand_y = x_hand_y / x_hand_mag
+        # Fallback: nếu không tính được X_hand (2 MCPs trùng nhau), dùng vector vuông góc với Y_hand
+        # Đảm bảo X_hand vuông góc với Y_hand để tạo hệ trục chuẩn
+        x_hand_x_normalized = -y_hand_y_normalized
+        x_hand_y_normalized = y_hand_x_normalized
+        # Normalize lại vector vuông góc
+        x_hand_mag_fallback = np.sqrt(x_hand_x_normalized**2 + x_hand_y_normalized**2)
+        if x_hand_mag_fallback > EPSILON:
+            x_hand_x_normalized = x_hand_x_normalized / x_hand_mag_fallback
+            x_hand_y_normalized = x_hand_y_normalized / x_hand_mag_fallback
         else:
             # Fallback cuối cùng: nếu vẫn không được, dùng (1, 0) mặc định
-            x_hand_x = 1.0
-            x_hand_y = 0.0
+            x_hand_x_normalized = 1.0
+            x_hand_y_normalized = 0.0
+    
+    # Đảm bảo orientation vectors là unit vectors (kiểm tra lại)
+    y_hand_final_mag = np.sqrt(y_hand_x_normalized**2 + y_hand_y_normalized**2)
+    if abs(y_hand_final_mag - 1.0) > EPSILON and y_hand_final_mag > EPSILON:
+        y_hand_x_normalized = y_hand_x_normalized / y_hand_final_mag
+        y_hand_y_normalized = y_hand_y_normalized / y_hand_final_mag
+    
+    x_hand_final_mag = np.sqrt(x_hand_x_normalized**2 + x_hand_y_normalized**2)
+    if abs(x_hand_final_mag - 1.0) > EPSILON and x_hand_final_mag > EPSILON:
+        x_hand_x_normalized = x_hand_x_normalized / x_hand_final_mag
+        x_hand_y_normalized = x_hand_y_normalized / x_hand_final_mag
     
     # Lưu orientation vectors đã normalize vào features
     # Y_hand: trục dọc của bàn tay (wrist → mean(MCPs)) - hướng lên/xuống
@@ -212,13 +227,13 @@ def normalize_features(landmarks_array):
         feats[2*i] = float(normalized_x[i])
         feats[2*i+1] = float(normalized_y[i])
     
-    # Thêm Y_hand features (indices 42, 43) - đã normalize
+    # Thêm Y_hand features (indices 42, 43) - đã normalize và kiểm tra
     feats[NUM_LANDMARKS * 2] = float(y_hand_x_normalized)  # Index 42: Y_hand X component
     feats[NUM_LANDMARKS * 2 + 1] = float(y_hand_y_normalized)  # Index 43: Y_hand Y component
     
-    # Thêm X_hand features (indices 44, 45) - đã normalize
-    feats[NUM_LANDMARKS * 2 + 2] = float(x_hand_x)  # Index 44: X_hand X component
-    feats[NUM_LANDMARKS * 2 + 3] = float(x_hand_y)  # Index 45: X_hand Y component
+    # Thêm X_hand features (indices 44, 45) - đã normalize và kiểm tra
+    feats[NUM_LANDMARKS * 2 + 2] = float(x_hand_x_normalized)  # Index 44: X_hand X component
+    feats[NUM_LANDMARKS * 2 + 3] = float(x_hand_y_normalized)  # Index 45: X_hand Y component
     
     return feats
 
@@ -336,12 +351,14 @@ for gesture_folder in gesture_folders:
         
         # Convert BGR → RGB (MediaPipe cần RGB)
         img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        img_rgb.flags.writeable = False  # Tránh copy không cần thiết, tối ưu memory
         
         # Tạo MediaPipe Image object
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=img_rgb)
         
         # MediaPipe Hand Landmarker detection
         detection_result = landmarker.detect(mp_image)
+        del mp_image
         
         # ========== TRƯỜNG HỢP S_Nothing: KHÔNG có tay ==========
         if gesture_folder == 'S_Nothing':
@@ -419,6 +436,14 @@ for gesture_folder in gesture_folders:
         
         features = normalize_features(landmarks_array)
         
+        # VALIDATION: Kiểm tra features có chứa NaN hoặc Inf không
+        if np.any(np.isnan(features)) or np.any(np.isinf(features)):
+            msg = f"{gesture_folder}/{img_file}: features chứa NaN hoặc Inf (skip)"
+            skip_log.append(msg)
+            print(f"    [SKIP] {msg}")
+            skipped_images += 1
+            continue
+        
         data.append(features.tolist())
         labels.append(gesture_folder)
         has_hand_flags.append(1)
@@ -440,12 +465,14 @@ for gesture_folder in gesture_folders:
             
             # Convert BGR → RGB (MediaPipe cần RGB)
             img_rgb_flipped = cv2.cvtColor(img_flipped, cv2.COLOR_BGR2RGB)
+            img_rgb_flipped.flags.writeable = False  # Tránh copy không cần thiết, tối ưu memory
             
             # Tạo MediaPipe Image object cho ảnh đã flip
             mp_image_flipped = mp.Image(image_format=mp.ImageFormat.SRGB, data=img_rgb_flipped)
             
             # Detect lại trên ảnh đã flip
             detection_result_flipped = landmarker.detect(mp_image_flipped)
+            del mp_image_flipped
             
             # VALIDATION: Kiểm tra kết quả detection trên ảnh flip
             if not detection_result_flipped.hand_landmarks or len(detection_result_flipped.hand_landmarks) == 0:
@@ -454,6 +481,7 @@ for gesture_folder in gesture_folders:
                 # LƯU Ý: Ảnh gốc đã được xử lý thành công, chỉ augmentation fail
                 augmentation_failed_count += 1
                 augmentation_failed_log.append(f"{gesture_folder}/{img_file}: flip augmentation failed (0 tay)")
+                del img_rgb_flipped  # Cleanup trước khi continue
                 continue
             
             if len(detection_result_flipped.hand_landmarks) != 1:
@@ -461,6 +489,7 @@ for gesture_folder in gesture_folders:
                 # LƯU Ý: Ảnh gốc đã được xử lý thành công, chỉ augmentation fail
                 augmentation_failed_count += 1
                 augmentation_failed_log.append(f"{gesture_folder}/{img_file}: flip augmentation failed ({len(detection_result_flipped.hand_landmarks)} tay)")
+                del img_rgb_flipped  # Cleanup trước khi continue
                 continue
             
             # Extract landmarks từ kết quả detection trên ảnh flip
@@ -472,10 +501,19 @@ for gesture_folder in gesture_folders:
                 # LƯU Ý: Ảnh gốc đã được xử lý thành công, chỉ augmentation fail
                 augmentation_failed_count += 1
                 augmentation_failed_log.append(f"{gesture_folder}/{img_file}: flip augmentation failed (landmarks != {NUM_LANDMARKS})")
+                del img_rgb_flipped  # Cleanup trước khi continue
                 continue
             
             # Normalize features từ landmarks đã detect trên ảnh flip
             features_flipped = normalize_features(landmarks_array_flipped)
+            
+            # VALIDATION: Kiểm tra features_flipped có chứa NaN hoặc Inf không
+            if np.any(np.isnan(features_flipped)) or np.any(np.isinf(features_flipped)):
+                # LƯU Ý: Ảnh gốc đã được xử lý thành công, chỉ augmentation fail
+                augmentation_failed_count += 1
+                augmentation_failed_log.append(f"{gesture_folder}/{img_file}: flip augmentation failed (features chứa NaN/Inf)")
+                del img_rgb_flipped  # Cleanup trước khi continue
+                continue
             
             # Lấy handedness từ kết quả detection trên ảnh flip
             handedness_label_flip = None
@@ -495,6 +533,9 @@ for gesture_folder in gesture_folders:
             handedness_flags.append(handedness_label_flip)
             gesture_samples += 1  # Đếm thêm 1 sample từ augmentation
             gesture_augmented_samples += 1
+            
+            # Cleanup img_rgb_flipped sau khi đã xử lý xong
+            del img_rgb_flipped
         
         # Hiển thị progress mỗi 100 ảnh hoặc ảnh cuối cùng
         if img_idx % 100 == 0 or img_idx == len(image_files):

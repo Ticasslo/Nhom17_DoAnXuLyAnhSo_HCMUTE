@@ -3,9 +3,9 @@
 // Board: ESP32-S3, Flash 16MB, PSRAM 8MB. WiFi STA.
 //
 // ====== TỔNG HỢP TỐI ƯU FPS ĐÃ ÁP DỤNG ======
-// 1. WiFi Power Save: BẬT (WIFI_PS_MIN_MODEM)
-//    → esp_wifi_set_ps(WIFI_PS_MIN_MODEM) - WiFi tiết kiệm điện (~50-70mA thay vì ~80-100mA)
-//    → Trade-off: có thể tăng lag nhẹ nhưng giảm đáng kể tiêu thụ điện
+// 1. WiFi Power Save: TẮT (WIFI_PS_NONE)
+//    → esp_wifi_set_ps(WIFI_PS_NONE) - WiFi luôn hoạt động (~80-100mA)
+//    → Giảm lag, tăng FPS ổn định
 //
 // 2. Camera Config:
 //    → xclk_freq_hz = tốc độ clock của camera
@@ -30,11 +30,11 @@
 //    → Serial prints chỉ khi DEBUG_MODE → giảm overhead
 //    → RTOS ticks: 1000 Hz (config trong menuconfig: CONFIG_FREERTOS_HZ=1000)
 //
-// ====== TỐI ƯU TIÊU THỤ ĐIỆN ĐÃ ÁP DỤNG ======
-// 1. CPU Frequency: 160MHz (thay vì 240MHz) → ~150-180mA thay vì ~200-250mA
+// ====== TỐI ƯU PERFORMANCE ĐÃ ÁP DỤNG ======
+// 1. CPU Frequency: 240MHz → ~200-250mA (ưu tiên FPS cao, performance tốt)
 // 2. WiFi TX Power: 11dBm (thay vì 19.5dBm) → ~50-70mA thay vì ~80-100mA
-// 3. WiFi Power Save: WIFI_PS_MIN_MODEM → ~50-70mA thay vì ~80-100mA
-// → Tổng tiết kiệm: ~100-150mA (từ ~360-450mA xuống ~250-300mA)
+// 3. WiFi Power Save: TẮT (WIFI_PS_NONE) → ~80-100mA (ưu tiên FPS, không lag)
+// → Tổng tiêu thụ: ~330-420mA (ưu tiên performance và FPS)
 //
 // ============================================
 
@@ -56,8 +56,8 @@ const char *password = "910JQKA2";
 // ====== Camera quality/FPS trade-off ======
 // VGA (640x480) - cân bằng chất lượng và FPS
 #define FRAME_SIZE FRAMESIZE_VGA
-#define JPEG_QUALITY 16
-#define FB_COUNT 2 // Double buffering - tốn ~50KB PSRAM (ESP32-S3 có 8MB PSRAM → đủ)
+#define JPEG_QUALITY 12
+#define FB_COUNT 5 // Double buffering - tốn ~50KB PSRAM (ESP32-S3 có 8MB PSRAM → đủ)
 
 // ====== Pinout ESP32-S3 N16R8 + OV2640 (ESP32-S3-EYE layout) ======
 #define PWDN_GPIO_NUM -1
@@ -253,7 +253,7 @@ void wifiTask(void *pvParameters)
         Serial.println(WiFi.localIP());
         retry_count = 0;
         was_connected = true;
-        esp_wifi_set_ps(WIFI_PS_MIN_MODEM); // Đảm bảo power save vẫn bật (tiết kiệm điện)
+        esp_wifi_set_ps(WIFI_PS_NONE); // Tắt power save để giảm lag
       }
       else
       {
@@ -299,12 +299,8 @@ void setup()
   Serial.println();
 #endif
 
-  // CPU frequency: Mặc định có thể là 160MHz hoặc 240MHz tùy framework/board config
-  // Arduino framework thường mặc định 240MHz, ESP-IDF có thể là 160MHz
-  // 240MHz: ~200-250mA | 160MHz: ~150-180mA | 80MHz: ~100-120mA
-  // Nếu bị sụt áp, giảm xuống 160MHz hoặc 80MHz
-  // setCpuFrequencyMhz(240); // ĐÃ TẮT - 240MHz tiêu tốn nhiều điện (~200-250mA)
-  setCpuFrequencyMhz(160); // Giảm xuống 160MHz để tiết kiệm điện (~150-180mA), vẫn đủ mạnh cho streaming
+  // Set CPU frequency lên 240MHz để tăng performance (FPS cao hơn)
+  setCpuFrequencyMhz(240);
 
   camera_config_t config;
   config.ledc_channel = LEDC_CHANNEL_0;
@@ -388,11 +384,9 @@ void setup()
   }
   Serial.println();
 
-  // WiFi Power Save: WIFI_PS_NONE (tắt) là MẶC ĐỊNH theo tài liệu Espressif
-  // WIFI_PS_NONE: ~80-100mA (mặc định, luôn hoạt động) | WIFI_PS_MIN_MODEM: ~50-70mA (tiết kiệm một phần)
-  // Nếu bị sụt áp, có thể thử WIFI_PS_MIN_MODEM (trade-off giữa lag và tiêu thụ điện)
-  // esp_wifi_set_ps(WIFI_PS_NONE); // ĐÃ TẮT - WiFi không ngủ → tiêu tốn nhiều điện (~80-100mA)
-  esp_wifi_set_ps(WIFI_PS_MIN_MODEM); // BẬT power save → tiết kiệm điện (~50-70mA), có thể tăng lag nhẹ
+  // WiFi Power Save: WIFI_PS_NONE (tắt) - Tắt power save để giảm lag, tăng FPS
+  // WIFI_PS_NONE: ~80-100mA (luôn hoạt động, không lag) | WIFI_PS_MIN_MODEM: ~50-70mA (tiết kiệm nhưng có lag)
+  esp_wifi_set_ps(WIFI_PS_NONE); // TẮT power save → giảm lag, tăng FPS (~80-100mA)
 
   Serial.println("WiFi connected");
   Serial.print("IP address: ");

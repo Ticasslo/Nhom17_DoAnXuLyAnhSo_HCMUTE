@@ -25,4 +25,5 @@ print("OK")
 # pip install matplotlib==3.10.8
 # pip install tensorflow==2.16.1
 # pip install pandas
+# pip install paho-mqtt
 # pip uninstall -y jax jaxlib # BỎ ĐI JAX VÀ JAXLIB VÌ MEDIAPIPE CÀI CHUNG RỒI

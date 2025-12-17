@@ -7,27 +7,112 @@ from queue import Queue, Empty, Full
 import numpy as np
 from PIL import Image, ImageTk
 import tkinter as tk
+import pickle
+from collections import deque, Counter
 
 import mediapipe as mp
 from mediapipe.tasks.python import vision
+import tensorflow as tf
+
+# MQTT Publisher (dùng để publish lệnh qua MQTT)
+from mqtt_publisher import init_mqtt_publisher, publish_gesture_command, get_mqtt_publisher
 
 # Giảm warning log
 warnings.filterwarnings("ignore", category=UserWarning)
 
+# ========== 0. CONSTANTS ==========
+# Label prefixes
+ASYMMETRIC_PREFIX_RH = "A_RH_"
+ASYMMETRIC_PREFIX_LH = "A_LH_"
+SYMMETRIC_PREFIX = "S_"
+
+# MediaPipe landmarks
+NUM_LANDMARKS = 21  # Số lượng landmarks cho mỗi hand
+# MCP (Metacarpophalangeal) joints: Thumb=2, Index=5, Middle=9, Ring=13, Pinky=17
+# MCP đại diện cho hướng của ngón tay, không bị ảnh hưởng bởi việc gập ngón
+# Dùng trung bình của 4 ngón (Index, Middle, Ring, Pinky) để đại diện hướng chính của bàn tay
+# Trừ thumb vì thumb có hướng khác (vuông góc với các ngón khác)
+FINGER_MCP_INDICES = [5, 9, 13, 17]  # Index, Middle, Ring, Pinky MCPs
+INDEX_MCP_IDX = 5   # Index finger MCP landmark index
+PINKY_MCP_IDX = 17  # Pinky finger MCP landmark index
+NUM_FEATURES = 46  # 42 landmarks (21 * 2) + 2 Y_hand + 2 X_hand = 46 features
+
 # ========== 1. CONFIGURATION ==========
-# Camera settings
-SOURCE = 0  # 0 = webcam mặc định
+# Camera settings - ESP32 Camera Stream
+# Thay đổi IP và port theo ESP32 của bạn
+# Ví dụ: "http://192.168.1.100:81/stream" hoặc "http://esp32-cam.local:81/stream"
+SOURCE = "http://192.168.115.179:80/stream"  # ESP32 camera stream URL (LUÔN LUÔN dùng ESP32)
 
 # Performance settings
-NUM_HANDS = 4  # 2 người (mỗi người 2 tay) - có thể giảm xuống 2 nếu chỉ cần 1 người
-MIN_DETECTION_CONFIDENCE = 0.6  # Ngưỡng cho palm detector (BlazePalm)
-MIN_PRESENCE_CONFIDENCE = 0.5   # Ngưỡng để trigger re-detection (thấp hơn = re-detect thường xuyên hơn)
-MIN_TRACKING_CONFIDENCE = 0.5   # Ngưỡng cho hand tracking (landmark model)
+NUM_HANDS = 1  # Chỉ 1 tay (ESP32 thường chỉ detect 1 tay)
+MIN_DETECTION_CONFIDENCE = 0.7  # Ngưỡng cho palm detector (BlazePalm)
+MIN_PRESENCE_CONFIDENCE = 0.6   # Ngưỡng để trigger re-detection (thấp hơn = re-detect thường xuyên hơn)
+MIN_TRACKING_CONFIDENCE = 0.6   # Ngưỡng cho hand tracking (landmark model)
 
 # Filtering thresholds
-HAND_MIN_AREA_RATIO = 0.0025   # ~0.25% diện tích frame (bỏ box quá nhỏ)
-HAND_MAX_AREA_RATIO = 0.35     # ~35% diện tích frame (bỏ box quá lớn)
-HANDEDNESS_SCORE_THRESHOLD = 0.6  # Ngưỡng confidence tối thiểu cho handedness
+HAND_MIN_AREA_RATIO = 0.0025   # ~% diện tích frame (bỏ box quá nhỏ)
+HAND_MAX_AREA_RATIO = 0.45     # ~% diện tích frame (bỏ box quá lớn)
+HANDEDNESS_SCORE_THRESHOLD = 0.75  # Ngưỡng confidence tối thiểu cho handedness
+GESTURE_REJECT_THRESHOLD = 0.85  # Ngưỡng reject cứng: dưới ngưỡng này coi như Unknown
+# Filter TRƯỚC khi vào GestureVoter - reject sớm để hiệu quả hơn
+# - Nếu confidence < 0.85 → reject cứng, KHÔNG vào GestureVoter (hiển thị "Unknown")
+# - Nếu confidence >= 0.85 → vào GestureVoter để xử lý với voting
+# - Tăng lên (0.88-0.92) → khắt khe hơn, ổn định hơn
+# - Giảm xuống (0.80-0.83) → dễ chấp nhận hơn nhưng có thể nhận cả predictions không chắc
+
+# Entropy threshold (kiểm tra độ "phẳng" của probability distribution)
+# Entropy cao = phân phối phẳng = nhiều class có xác suất gần nhau = không chắc → reject
+# Entropy thấp = phân phối tập trung = một class chiếm ưu thế = chắc → accept
+ENTROPY_THRESHOLD = 2.0  # Ngưỡng entropy tối đa (entropy > threshold → reject vì không chắc)
+
+# Orientation filtering thresholds
+# Orientation (hướng bàn tay) được tính từ 2 trục:
+# - Y_hand: vector từ wrist đến trung bình của 4 MCP joints (Index, Middle, Ring, Pinky) - trục DỌC
+# - X_hand: vector từ index_MCP đến pinky_MCP - trục NGANG
+# Magnitude = độ dài vector (sau khi normalize về [0,1] thì magnitude = sqrt(x^2 + y^2))
+# Magnitude nhỏ → landmarks quá gần nhau → orientation không ổn định → prediction không đáng tin
+
+ORIENTATION_MIN_MAGNITUDE = 0.15  # Ngưỡng magnitude tối thiểu cho Y_hand và X_hand (reject khi orientation không ổn định)
+# Cả Y_hand và X_hand phải có magnitude ≥ 0.15 mới được chấp nhận
+# - Tăng lên (0.20-0.25) → khắt khe hơn, reject nhiều hơn, ổn định hơn nhưng có thể bỏ sót gesture hợp lệ
+# - Giảm xuống (0.10-0.12) → dễ chấp nhận hơn, ít reject hơn nhưng có thể nhận cả orientation không ổn định
+# Giá trị 0.15 là cân bằng tốt: đủ để filter noise nhưng không quá khắt khe
+
+# GestureVoter settings
+# GestureVoter là hệ thống voting theo thời gian để ổn định gesture prediction
+# Mỗi frame, nếu prediction hợp lệ → thêm vào votes, sau đó kiểm tra 3 điều kiện:
+# 1. Đủ số votes đầu vào (min_votes) - ĐIỀU KIỆN ĐẦU VÀO
+# 2. Đủ thời gian giữ tay (acceptance_time) - ĐIỀU KIỆN THỜI GIAN
+# 3. Đủ tỷ lệ đồng ý (vote_threshold) - ĐIỀU KIỆN TỶ LỆ
+
+GESTURE_VOTER_MIN_VOTES = 7  # Số votes tối thiểu cần có (ĐIỀU KIỆN ĐẦU VÀO)
+# Phải có ít nhất 7 votes mới BẮT ĐẦU kiểm tra các điều kiện khác
+# - Đây là điều kiện đầu vào: chưa đủ 7 votes → không kiểm tra gì cả
+# - Tăng lên (10-15) → cần nhiều frames hơn, chậm hơn nhưng ổn định hơn
+# - Giảm xuống (4-6) → phản ứng nhanh hơn nhưng dễ nhạy cảm với noise
+# Ví dụ: FPS 30 → 7 votes = 0.23s, FPS 10 → 7 votes = 0.7s
+
+GESTURE_VOTER_ACCEPTANCE_TIME = 1.2  # Thời gian PHẢI GIỮ TAY (giây) - ĐIỀU KIỆN THỜI GIAN
+# Phải giữ tay trong ít nhất 1.2s từ vote đầu tiên mới được chấp nhận gesture
+# - Đây là điều kiện thời gian: người dùng phải giữ tay đủ lâu (tránh false positive ngắn)
+# - Tăng lên (1.5-2.0) → phải giữ tay lâu hơn, ổn định hơn, ít false positive
+# - Giảm xuống (0.5-0.8) → giữ tay ngắn hơn, phản ứng nhanh nhưng dễ nhạy cảm với noise
+# LƯU Ý: Phải ≤ GESTURE_VOTER_VOTE_LIFETIME để đảm bảo vote đầu tiên không bị xóa trước khi đạt acceptance_time
+
+GESTURE_VOTER_VOTE_LIFETIME = 2.0  # Thời gian XÉT HỢP LỆ votes (giây) - ĐIỀU KIỆN XÉT
+# Votes cũ hơn 2.0s sẽ bị xóa tự động (chỉ xét votes trong 2.0s gần nhất)
+# - Đây là điều kiện xét hợp lệ: chỉ tính votes trong khoảng thời gian này
+# - 80% (vote_threshold) được tính dựa vào TẤT CẢ votes trong 2.0s này
+# - Cao hơn (2.5-3.0) → xét votes lâu hơn, ổn định hơn nhưng phản ứng chậm khi đổi gesture
+# - Thấp hơn (1.5-1.8) → xét votes ngắn hơn, phản ứng nhanh nhưng dễ nhạy cảm với noise
+# LƯU Ý: Phải ≥ GESTURE_VOTER_ACCEPTANCE_TIME để đảm bảo vote đầu tiên không bị xóa trước khi đạt acceptance_time
+
+GESTURE_VOTER_VOTE_THRESHOLD = 0.80  # Tỷ lệ votes đồng ý tối thiểu (80%) - ĐIỀU KIỆN TỶ LỆ
+# Gesture phải chiếm ≥ 80% tổng số votes (trong vote_lifetime) mới được chấp nhận
+# - Đây là điều kiện tỷ lệ: tính dựa vào TẤT CẢ votes trong vote_lifetime (2.0s), KHÔNG phải chỉ trong acceptance_time
+# - Ví dụ: có 10 votes trong 2.0s, 8 votes là "FanSpeed1" → 80% → chấp nhận
+# - Tăng lên (0.85-0.90) → khó chấp nhận hơn, ổn định hơn, ít false positive
+# - Giảm xuống (0.70-0.75) → dễ chấp nhận hơn, phản ứng nhanh nhưng dễ nhạy cảm
 
 # Display settings
 PRINT_EVERY_N_FRAMES = 200
@@ -45,8 +130,401 @@ DETECTION_BUFFER_SIZE = 1
 DETECTION_SKIP_FRAMES = 1  # Số frame bỏ qua giữa các lần detection (0 = detect mọi frame)
 # =======================================
 
-# ---------- 2. MediaPipe Hand Landmarker ----------
+# ---------- 2. Load Gesture Model & Metadata ----------
 script_dir = os.path.dirname(os.path.abspath(__file__))
+
+# Model paths
+GESTURE_MODEL_PATH = os.path.join(script_dir, "SavedModel/saved_model_best")
+METADATA_PATH = os.path.join(script_dir, "SavedModel/metadata.pkl")
+
+# Load model
+if not os.path.exists(GESTURE_MODEL_PATH):
+    raise FileNotFoundError(f"Không tìm thấy model: {GESTURE_MODEL_PATH}")
+if not os.path.exists(METADATA_PATH):
+    raise FileNotFoundError(f"Không tìm thấy metadata: {METADATA_PATH}")
+
+print("  → Loading gesture model...")
+gesture_model = tf.saved_model.load(GESTURE_MODEL_PATH)
+print("  → Model loaded (SavedModel format)")
+
+# Kiểm tra và lấy signature
+if hasattr(gesture_model, 'signatures') and 'serving_default' in gesture_model.signatures:
+    model_signature = gesture_model.signatures['serving_default']
+    print(f"  → Using signature: serving_default")
+else:
+    raise ValueError("SavedModel không có signature 'serving_default'!")
+
+print("  → Loading metadata...")
+with open(METADATA_PATH, 'rb') as f:
+    metadata = pickle.load(f)
+    
+    # FORMAT:
+    # {
+    #   'labels': ['A_LH_FanLeft', 'A_LH_FanRight', ..., 'S_Start'],
+    #   'num_features': 46,
+    #   'feature_columns': ['feat_0', 'feat_1', ...],
+    #   'tf_version': '2.16.1',
+    #   'format': 'SavedModel',
+    # }
+    
+    if not isinstance(metadata, dict):
+        raise ValueError(f"metadata.pkl không phải dict! Type: {type(metadata)}")
+    
+    # Kiểm tra 'labels'
+    if 'labels' not in metadata:
+        raise ValueError(f"metadata.pkl không có 'labels'!")
+    
+    labels_list = metadata['labels']
+    if not isinstance(labels_list, list):
+        raise ValueError(f"metadata['labels'] phải là list, nhận được: {type(labels_list)}")
+    
+    if len(labels_list) == 0:
+        raise ValueError("metadata['labels'] không được rỗng!")
+    
+    # Tạo label_mapping: {0: label0, 1: label1, ...}
+    label_mapping = {i: label for i, label in enumerate(labels_list)}
+    
+    # Extract symmetric gestures từ labels (các label bắt đầu bằng 'S_')
+    SYMMETRIC_GESTURES = set([label for label in labels_list if label.startswith(SYMMETRIC_PREFIX)])
+    
+    num_classes = len(labels_list)
+    
+    # Hiển thị thông tin metadata
+    if 'num_features' in metadata:
+        print(f"  → Num features: {metadata['num_features']}")
+    if 'tf_version' in metadata:
+        print(f"  → TF version: {metadata['tf_version']}")
+    if 'format' in metadata:
+        print(f"  → Format: {metadata['format']}")
+    
+    print(f"  → Loaded {num_classes} labels")
+    print(f"  → Symmetric gestures: {len(SYMMETRIC_GESTURES)}")
+print(f"  → Model ready: {num_classes} classes")
+
+
+# ---------- 2.1. GestureVoter Class ----------
+class GestureVoter:
+    def __init__(self,
+                 acceptance_time=GESTURE_VOTER_ACCEPTANCE_TIME,
+                 vote_lifetime=GESTURE_VOTER_VOTE_LIFETIME, 
+                 vote_threshold=GESTURE_VOTER_VOTE_THRESHOLD,
+                 min_votes=GESTURE_VOTER_MIN_VOTES):
+        
+        # Validation: acceptance_time phải ≤ vote_lifetime
+        # Nếu không, vote đầu tiên sẽ bị xóa trước khi đạt acceptance_time
+        if acceptance_time > vote_lifetime:
+            raise ValueError(
+                f"acceptance_time ({acceptance_time}s) phải ≤ vote_lifetime ({vote_lifetime}s). "
+            )
+        
+        self.acceptance_time = acceptance_time
+        self.vote_lifetime = vote_lifetime
+        self.vote_threshold = vote_threshold
+        self.min_votes = min_votes
+        self.votes = deque()
+        self.current_gesture = None
+        self.current_confidence = 0.0
+    
+    def vote(self, prediction, confidence):     
+        current_time = time.time()
+        
+        # Kiểm tra nếu gesture thay đổi: reset votes và current_gesture
+        # Điều này đảm bảo gesture mới bắt đầu từ đầu, không bị ảnh hưởng bởi votes cũ
+        if self.current_gesture is not None and self.current_gesture != prediction:
+            # Gesture thay đổi → reset hoàn toàn để bắt đầu gesture mới
+            self.votes.clear()
+            self.current_gesture = None
+            self.current_confidence = 0.0
+        
+        # Thêm vote mới
+        self.votes.append((current_time, prediction, confidence))
+        
+        # Xóa votes cũ (quá vote_lifetime)
+        cutoff_time = current_time - self.vote_lifetime
+        while self.votes and self.votes[0][0] < cutoff_time:
+            self.votes.popleft()
+        
+        # ĐIỀU KIỆN 1: Đủ số votes đầu vào (min_votes)
+        # Phải có ít nhất min_votes mới bắt đầu kiểm tra các điều kiện khác
+        if len(self.votes) < self.min_votes:
+            return None, 0.0
+        
+        # ĐIỀU KIỆN 2: Đủ thời gian giữ tay (acceptance_time)
+        # Phải giữ tay trong ít nhất acceptance_time từ vote đầu tiên
+        first_vote_time = self.votes[0][0]
+        if (current_time - first_vote_time) < self.acceptance_time:
+            return None, 0.0
+        
+        # ĐIỀU KIỆN 3: Đủ tỷ lệ đồng ý (vote_threshold)
+        # Tính tỷ lệ dựa vào TẤT CẢ votes trong vote_lifetime (KHÔNG phải chỉ trong acceptance_time)
+        # Sau khi reset, tất cả votes đều là gesture mới
+        predictions = [pred for _, pred, _ in self.votes]
+        counter = Counter(predictions)
+        gesture, count = counter.most_common(1)[0]
+        ratio = count / len(self.votes)  # Tỷ lệ = số votes gesture / tổng số votes trong vote_lifetime
+        
+        # Chỉ chấp nhận nếu đạt vote_threshold (80%)
+        if ratio >= self.vote_threshold:
+            self.current_gesture = gesture
+            self.current_confidence = ratio
+            return gesture, ratio
+        
+        # Chưa đạt threshold: trả về None để hiển thị progress
+        return None, 0.0
+    
+    def get_progress(self):
+        if len(self.votes) < self.min_votes:
+            return 0.0, 0.0
+        first_vote_time = self.votes[0][0]
+        elapsed_time = time.time() - first_vote_time
+        time_progress = min(100, (elapsed_time / self.acceptance_time) * 100)
+        predictions = [pred for _, pred, _ in self.votes]
+        counter = Counter(predictions)
+        count = counter.most_common(1)[0][1]
+        vote_progress = (count / len(self.votes)) * 100
+        return vote_progress, time_progress
+    
+    def reset(self):
+        self.votes.clear()
+        self.current_gesture = None
+        self.current_confidence = 0.0
+
+# Global gesture voters (một voter cho mỗi hand)
+gesture_voters = {}
+
+# ---------- 2.1.5. Optimized Prediction Function (tf.function) ----------
+# SavedModel: gọi qua signature 'serving_default' với input dict {'input_layer_1': features_batch}
+@tf.function(reduce_retracing=True)
+def predict_gesture(features_batch):
+    # Đảm bảo dtype là float32 (SavedModel yêu cầu)
+    if isinstance(features_batch, np.ndarray):
+        features_batch = tf.constant(features_batch, dtype=tf.float32)
+    elif not isinstance(features_batch, tf.Tensor):
+        features_batch = tf.convert_to_tensor(features_batch, dtype=tf.float32)
+    
+    # SavedModel format: input phải là dict với key 'input_layer_1'
+    result = model_signature(input_layer_1=features_batch)
+    # Output là dict {'output_0': tensor}, trả về tensor
+    return result['output_0']
+
+
+# ---------- 2.2. Normalize Features Function ----------
+def normalize_features(landmarks_array):
+    """
+    Normalize landmarks: relative + scale normalization + orientation features
+    Input: landmarks_array shape (21, 2) với (x, y) [đã normalized [0,1] từ MediaPipe]
+    Output: NUM_FEATURES features [x0, y0, x1, y1, ..., x20, y20, y_hand_x, y_hand_y, x_hand_x, x_hand_y] đã normalize (np.float32)
+    """
+    landmarks = np.asarray(landmarks_array, dtype=np.float32)
+    x_coords = landmarks[:, 0]
+    y_coords = landmarks[:, 1]
+    
+    # Relative normalization về wrist (landmark 0)
+    wrist_x, wrist_y = x_coords[0], y_coords[0]
+    relative_x = x_coords - wrist_x
+    relative_y = y_coords - wrist_y
+    
+    # Scale normalization
+    max_value = max(np.max(np.abs(relative_x)), np.max(np.abs(relative_y)))
+    if max_value > 0:
+        normalized_x = relative_x / max_value
+        normalized_y = relative_y / max_value
+    else:
+        normalized_x, normalized_y = relative_x, relative_y
+    
+    # ========== ORIENTATION FEATURES (HAND LOCAL SPACE) ==========
+    # Tính 2 trục cơ bản của bàn tay để phân biệt hướng và rotation
+    # PHẢI GIỐNG HỆT với hàm normalize_features()
+    # 
+    # QUY TRÌNH:
+    # 1. Dựng hệ trục bàn tay (hand local coordinate system):
+    #    - Y_hand = wrist → mean(MCPs) (trục DỌC của bàn tay)
+    #    - X_hand = index_MCP → pinky_MCP (trục NGANG của bàn tay)
+    # 2. Normalize cả 2 trục thành unit vectors
+    # 3. Lưu vào features [indices 42-45]
+    # 
+    # TẠI SAO CẦN CẢ 2 TRỤC?
+    # - CHỈ Y_hand: Phân biệt Up/Down/Left/Right nhưng KHÔNG biết rotation angle
+    # - CẢ Y_hand + X_hand: Phân biệt đầy đủ orientation 2D (hướng + rotation)
+    # 
+    # VÍ DỤ:
+    # - Thumbs Up thẳng: Y=(0,-1), X=(+1,0)
+    # - Thumbs Up xoay 45°: Y=(-0.7,-0.7), X=(+0.7,-0.7)
+    # - Thumbs Up tay trái: Y=(0,-1), X=(-1,0)  ← Model đã train với flip augmentation
+    # 
+    # LƯU Ý:
+    # - Model đã train với SYMMETRIC AUGMENTATION (flip ảnh)
+    # - Symmetric gestures có thể có X_hand hướng bất kỳ (từ augmentation)
+    # - Model tự học robust với cả 2 hướng X_hand cho symmetric gestures
+    
+    # Tính trung bình của 4 MCP joints (Index, Middle, Ring, Pinky)
+    mcp_x_avg = np.mean(normalized_x[FINGER_MCP_INDICES])
+    mcp_y_avg = np.mean(normalized_y[FINGER_MCP_INDICES])
+    
+    # Y_hand: vector từ wrist (0,0) đến mean(MCPs) - đây là hướng lên của bàn tay
+    y_hand_x = mcp_x_avg  # Wrist = (0,0) sau relative normalization
+    y_hand_y = mcp_y_avg
+    
+    # X_hand: vector từ index_MCP đến pinky_MCP - đây là hướng ngang của bàn tay
+    x_hand_x = normalized_x[PINKY_MCP_IDX] - normalized_x[INDEX_MCP_IDX]
+    x_hand_y = normalized_y[PINKY_MCP_IDX] - normalized_y[INDEX_MCP_IDX]
+    
+    EPSILON = 1e-6  # Ngưỡng tối thiểu để tránh chia cho 0
+    
+    # Normalize Y_hand TRƯỚC (ưu tiên orientation) - đây là trục chính của bàn tay
+    y_hand_mag = np.sqrt(y_hand_x**2 + y_hand_y**2)
+    if y_hand_mag > EPSILON:
+        y_hand_x_normalized = y_hand_x / y_hand_mag
+        y_hand_y_normalized = y_hand_y / y_hand_mag
+    else:
+        # Fallback: nếu không tính được Y_hand (tất cả landmarks trùng nhau), dùng (0, -1) mặc định
+        y_hand_x_normalized = 0.0
+        y_hand_y_normalized = -1.0
+    
+    # Normalize X_hand SAU (dựa trên Y_hand đã normalize)
+    x_hand_mag = np.sqrt(x_hand_x**2 + x_hand_y**2)
+    if x_hand_mag > EPSILON:
+        x_hand_x_normalized = x_hand_x / x_hand_mag
+        x_hand_y_normalized = x_hand_y / x_hand_mag
+    else:
+        # Fallback: nếu không tính được X_hand (2 MCPs trùng nhau), dùng vector vuông góc với Y_hand
+        # Đảm bảo X_hand vuông góc với Y_hand để tạo hệ trục chuẩn
+        x_hand_x_normalized = -y_hand_y_normalized
+        x_hand_y_normalized = y_hand_x_normalized
+        # Normalize lại vector vuông góc
+        x_hand_mag_fallback = np.sqrt(x_hand_x_normalized**2 + x_hand_y_normalized**2)
+        if x_hand_mag_fallback > EPSILON:
+            x_hand_x_normalized = x_hand_x_normalized / x_hand_mag_fallback
+            x_hand_y_normalized = x_hand_y_normalized / x_hand_mag_fallback
+        else:
+            # Fallback cuối cùng: nếu vẫn không được, dùng (1, 0) mặc định
+            x_hand_x_normalized = 1.0
+            x_hand_y_normalized = 0.0
+    
+    # Đảm bảo orientation vectors là unit vectors (kiểm tra lại)
+    y_hand_final_mag = np.sqrt(y_hand_x_normalized**2 + y_hand_y_normalized**2)
+    if abs(y_hand_final_mag - 1.0) > EPSILON and y_hand_final_mag > EPSILON:
+        y_hand_x_normalized = y_hand_x_normalized / y_hand_final_mag
+        y_hand_y_normalized = y_hand_y_normalized / y_hand_final_mag
+    
+    x_hand_final_mag = np.sqrt(x_hand_x_normalized**2 + x_hand_y_normalized**2)
+    if abs(x_hand_final_mag - 1.0) > EPSILON and x_hand_final_mag > EPSILON:
+        x_hand_x_normalized = x_hand_x_normalized / x_hand_final_mag
+        x_hand_y_normalized = x_hand_y_normalized / x_hand_final_mag
+    
+    # Lưu orientation vectors đã normalize vào features
+    # Y_hand: trục dọc của bàn tay (wrist → mean(MCPs)) - hướng lên/xuống
+    # X_hand: trục ngang của bàn tay (index_MCP → pinky_MCP) - hướng trái/phải + rotation
+    # Cả 2 đã normalize thành unit vectors → dùng trực tiếp
+    # Model tự học từ raw orientation values để phân biệt Up/Down/Left/Right + rotation angle
+    # ==============================================
+    
+    # Flatten thành NUM_FEATURES features (42 landmarks + 2 Y_hand + 2 X_hand)
+    feats = np.empty(NUM_FEATURES, dtype=np.float32)
+    for i in range(NUM_LANDMARKS):
+        feats[2*i] = float(normalized_x[i])
+        feats[2*i+1] = float(normalized_y[i])
+    
+    # Thêm Y_hand features (indices 42, 43) - đã normalize và kiểm tra
+    feats[NUM_LANDMARKS * 2] = float(y_hand_x_normalized)  # Index 42: Y_hand X component
+    feats[NUM_LANDMARKS * 2 + 1] = float(y_hand_y_normalized)  # Index 43: Y_hand Y component
+    
+    # Thêm X_hand features (indices 44, 45) - đã normalize và kiểm tra
+    feats[NUM_LANDMARKS * 2 + 2] = float(x_hand_x_normalized)  # Index 44: X_hand X component
+    feats[NUM_LANDMARKS * 2 + 3] = float(x_hand_y_normalized)  # Index 45: X_hand Y component
+    
+    return feats
+
+
+# ---------- 2.2.1. Check Orientation Validity Function ----------
+def check_orientation_validity(landmarks_array):
+    landmarks = np.asarray(landmarks_array, dtype=np.float32)
+    x_coords = landmarks[:, 0]
+    y_coords = landmarks[:, 1]
+    
+    # Relative normalization về wrist (landmark 0)
+    wrist_x, wrist_y = x_coords[0], y_coords[0]
+    relative_x = x_coords - wrist_x
+    relative_y = y_coords - wrist_y
+    
+    # Scale normalization
+    max_value = max(np.max(np.abs(relative_x)), np.max(np.abs(relative_y)))
+    if max_value > 0:
+        normalized_x = relative_x / max_value
+        normalized_y = relative_y / max_value
+    else:
+        normalized_x, normalized_y = relative_x, relative_y
+    
+    # Tính Y_hand và X_hand vectors (giống normalize_features)
+    mcp_x_avg = np.mean(normalized_x[FINGER_MCP_INDICES])
+    mcp_y_avg = np.mean(normalized_y[FINGER_MCP_INDICES])
+    
+    y_hand_x = mcp_x_avg
+    y_hand_y = mcp_y_avg
+    y_hand_mag = np.sqrt(y_hand_x**2 + y_hand_y**2)
+    
+    x_hand_x = normalized_x[PINKY_MCP_IDX] - normalized_x[INDEX_MCP_IDX]
+    x_hand_y = normalized_y[PINKY_MCP_IDX] - normalized_y[INDEX_MCP_IDX]
+    x_hand_mag = np.sqrt(x_hand_x**2 + x_hand_y**2)
+    
+    # Kiểm tra validity: cả 2 vectors phải có magnitude đủ lớn
+    is_valid = (y_hand_mag >= ORIENTATION_MIN_MAGNITUDE and 
+                x_hand_mag >= ORIENTATION_MIN_MAGNITUDE)
+    
+    return is_valid, y_hand_mag, x_hand_mag
+
+# ---------- 2.2.2. Validate Handedness for Asymmetric Gestures ----------
+def validate_handedness_for_prediction(prediction_label, detected_handedness):
+    # Chỉ validate cho asymmetric gestures
+    if not (prediction_label.startswith(ASYMMETRIC_PREFIX_LH) or prediction_label.startswith(ASYMMETRIC_PREFIX_RH)):
+        return True, None, None  # Symmetric gestures không cần validate
+    
+    # Xác định expected hand từ label
+    if prediction_label.startswith(ASYMMETRIC_PREFIX_LH):
+        expected_hand = 'Left'
+    elif prediction_label.startswith(ASYMMETRIC_PREFIX_RH):
+        expected_hand = 'Right'
+    else:
+        return True, None, None  # Không phải asymmetric
+    
+    # Nếu không detect được handedness, không thể validate
+    if detected_handedness is None:
+        return False, expected_hand, "Không detect được handedness"
+    
+    # Normalize detected handedness (có thể là "Left", "Right", hoặc "1 Left", "1 Right")
+    detected_hand = str(detected_handedness).strip()
+    if 'Left' in detected_hand:
+        detected_hand = 'Left'
+    elif 'Right' in detected_hand:
+        detected_hand = 'Right'
+    else:
+        return False, expected_hand, f"Handedness không hợp lệ: {detected_handedness}"
+    
+    # Kiểm tra khớp
+    if detected_hand == expected_hand:
+        return True, expected_hand, None
+    else:
+        return False, expected_hand, f"Không khớp: expected {expected_hand}, detected {detected_hand}"
+
+# ---------- 2.3. Map Prediction Label Function ----------
+def map_prediction_label(prediction, handedness_label, SYMMETRIC_GESTURES):
+    # Symmetric gestures: bỏ prefix "S_"
+    if prediction in SYMMETRIC_GESTURES:
+        return prediction.replace(SYMMETRIC_PREFIX, "") if prediction.startswith(SYMMETRIC_PREFIX) else prediction
+    
+    # Asymmetric gestures: giữ nguyên prefix LH/RH để biết rõ tay trái/phải
+    if prediction.startswith(ASYMMETRIC_PREFIX_RH):
+        # Model predict "A_RH_FanLeft" → hiển thị "RH_FanLeft"
+        return prediction.replace(ASYMMETRIC_PREFIX_RH, "RH_")
+    
+    elif prediction.startswith(ASYMMETRIC_PREFIX_LH):
+        # Model predict "A_LH_FanLeft" → hiển thị "LH_FanLeft"
+        return prediction.replace(ASYMMETRIC_PREFIX_LH, "LH_")
+    
+    # Fallback
+    return prediction
+
+# ---------- 2.4. MediaPipe Hand Landmarker ----------
 # TODO: tải model official từ docs và đặt cạnh script này
 # Ví dụ: https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task
 HAND_LANDMARKER_MODEL_PATH = os.path.join(script_dir, "hand_landmarker.task")
@@ -103,23 +581,7 @@ ema_state = {}
 def apply_ema_smoothing(hand_idx, current_landmarks, alpha=EMA_ALPHA):
     """
     Apply Exponential Moving Average smoothing to landmarks
-    
     EMA formula: smoothed_t = alpha * current + (1 - alpha) * smoothed_t-1
-    
-    Benefits:
-    - Memory efficient: Only stores 1 previous value (vs N frames for moving average)
-    - Computation efficient: Only 1 multiplication + 1 addition per keypoint
-    - Adaptive: Automatically adjusts to motion speed
-    - Lower latency: ~16-20ms lag vs ~33-50ms for moving average
-    
-    Args:
-        hand_idx: Hand index (for tracking across frames)
-        current_landmarks: Current frame landmarks (21, 3) numpy array
-        alpha: Smoothing factor (0.0=max smooth, 1.0=no smooth)
-               Recommended: 0.1 (very smooth), 0.3 (balanced), 0.5 (responsive)
-    
-    Returns:
-        smoothed_landmarks: EMA-smoothed landmarks (21, 3) numpy array
     """
     if not ENABLE_EMA_SMOOTHING:
         return current_landmarks
@@ -147,14 +609,6 @@ def apply_ema_smoothing(hand_idx, current_landmarks, alpha=EMA_ALPHA):
     return smoothed
 
 def cleanup_old_ema_state(current_hand_indices, max_age_seconds=5):
-    """
-    Remove EMA state for hands that haven't been seen recently
-    Call this periodically to avoid memory leak
-    
-    Args:
-        current_hand_indices: Set of hand indices detected in current frame
-        max_age_seconds: Remove hands not seen for this many seconds
-    """
     global ema_state
     current_time = time.time()
     
@@ -170,12 +624,12 @@ target_fps = 30.0
 
 print("=" * 60)
 print("CAMERA MODE - MediaPipe Hand Landmarker (keypoints + bbox)")
+print("  → ESP32 Camera Stream")
 
-# Tối ưu: Dùng MSMF backend trên Windows
-try:
-    temp_cap = cv2.VideoCapture(stream_url, cv2.CAP_MSMF)
-except Exception:
-    temp_cap = cv2.VideoCapture(stream_url)
+# ESP32 stream: dùng default backend cho HTTP/RTSP streams (không dùng MSMF)
+temp_cap = cv2.VideoCapture(stream_url)
+print(f"  → Kết nối ESP32 stream: {stream_url}")
+print("  → Đảm bảo ESP32 đã khởi động và stream đang chạy")
 
 if temp_cap.isOpened():
     detected_fps = temp_cap.get(cv2.CAP_PROP_FPS)
@@ -187,6 +641,14 @@ if temp_cap.isOpened():
         print("Detected camera FPS invalid (<=1 or >240). Using 30 FPS fallback.")
 else:
     print("Warning: Unable to open camera for FPS detection. Using 30 FPS fallback.")
+
+# Khởi tạo MQTT Publisher
+try:
+    init_mqtt_publisher()
+    print("  → MQTT Publisher initialized")
+except Exception as e:
+    print(f"  ✗ MQTT Publisher init failed: {e}")
+    raise  # Dừng chương trình nếu không init được MQTT
 
 print(f"Source: {stream_url}")
 print(f"Target FPS: {target_fps:.1f}")
@@ -213,15 +675,10 @@ queue_drop_lock = threading.Lock()
 def frame_grabber_thread():
     """
     Thread 1: Đọc frame từ camera và đưa vào queue.
-    
-    Tối ưu: Dùng MSMF backend trên Windows (nhanh hơn DirectShow).
-    Fallback về default nếu không support.
     """
     global queue_drop_count
-    try:
-        cap = cv2.VideoCapture(stream_url, cv2.CAP_MSMF)  # Windows: MSMF backend
-    except Exception:
-        cap = cv2.VideoCapture(stream_url)  # Fallback
+    # ESP32 stream: dùng default backend (không dùng MSMF)
+    cap = cv2.VideoCapture(stream_url)
     
     if not cap.isOpened():
         print("✗ Error: Cannot open video source")
@@ -267,9 +724,6 @@ def hand_landmarker_thread():
     """
     Thread 2: Lấy frame từ queue, chạy MediaPipe Hand Landmarker (VIDEO mode)
     và đẩy kết quả (keypoints + handedness) sang detection_queue.
-    
-    MediaPipe yêu cầu RGB format và Image wrapper.
-    Tối ưu: Set flags.writeable = False để tăng tốc (MediaPipe không modify image).
     """
     global queue_drop_count, is_paused
     
@@ -303,7 +757,7 @@ def hand_landmarker_thread():
 
                     ts_ms = int(frame_time * 1000)
                     t0 = time.time()
-                    # Thread-safe: dùng lock để tránh race condition khi recreate landmarker
+                    # Thread-safe: dùng lock để tránh race condition khi Settings recreate landmarker
                     with landmarker_lock:
                         result = landmarker.detect_for_video(mp_image, ts_ms)
                     t1 = time.time()
@@ -385,7 +839,7 @@ try:
     total_width = WINDOW_WIDTH + INFO_PANEL_WIDTH + 40
     total_height = WINDOW_HEIGHT + 100
     root.geometry(f"{total_width}x{total_height}")
-    root.configure(bg='#1e1e1e')  # Dark background
+    root.configure(bg='#1e1e1e')
     root.minsize(800, 500)  # Kích thước tối thiểu
     
     # Căn giữa window trên màn hình khi khởi động
@@ -493,7 +947,7 @@ try:
     video_container = tk.Frame(video_panel, bg='#000000', relief=tk.RAISED, bd=2)
     video_container.pack(fill=tk.BOTH, expand=True)
     
-    # Video label (sẽ fill toàn bộ container)
+    # Video label
     video_label = tk.Label(
         video_container,
         bg='#000000',
@@ -523,7 +977,6 @@ try:
     
     # ========== KEYBOARD SHORTCUTS ==========
     def toggle_pause():
-        """Toggle pause/resume detection"""
         global is_paused
         is_paused = not is_paused
         if status_label:
@@ -549,7 +1002,6 @@ try:
     settings_window = None
     
     def open_settings():
-        """Open settings window"""
         global settings_window
         
         if settings_window is not None:
@@ -879,12 +1331,7 @@ def get_track_color(track_id):
 
 def draw_keypoints(frame, keypoints, color=(0, 255, 255), radius=3, conf_threshold=0.3):
     """
-    Vẽ keypoints lên frame (tối ưu cho real-time với OpenCV direct calls)
-    
-    Performance: Custom OpenCV nhanh hơn MediaPipe official draw_landmarks vì:
-    - Không có protobuf conversion overhead
-    - Direct C++ OpenCV backend
-    - Có thể tối ưu validation và bounds checking
+    Vẽ keypoints lên frame
     
     Args:
         frame: Frame để vẽ
@@ -987,7 +1434,6 @@ def draw_hand_skeleton(frame, keypoints, color=(0, 255, 255), thickness=1, conf_
 
 # ---------- Main Update Loop ----------
 def update_frame():
-    """Update frame trong Tkinter UI (chạy trong mainloop)"""
     global frame_count, total_objects, prev_display_time, prev_capture_time
     global latest_detection, current_photo
     global inference_fps_list, inference_times, input_fps_list, fps_list, frame_intervals, display_latencies
@@ -1118,6 +1564,15 @@ def update_frame():
         # Visualization (MediaPipe hand landmarks + bounding box)
         annotated_frame = frame_original.copy()
         
+        # ========== XỬ LÝ KHI KHÔNG CÓ HAND ==========
+        has_hand = result and result.hand_landmarks and len(result.hand_landmarks) > 0
+        
+        if not has_hand:
+            # Reset và xóa tất cả voters khi không có tay
+            for hand_idx in list(gesture_voters.keys()):
+                gesture_voters[hand_idx].reset()
+                del gesture_voters[hand_idx]
+        
         if result and result.hand_landmarks:
             try:
                 # Cleanup old EMA state (prevent memory leak) - định kỳ mỗi 30 frames
@@ -1126,19 +1581,28 @@ def update_frame():
                     cleanup_old_ema_state(current_hand_indices, max_age_seconds=2)
                 
                 for hand_idx, landmarks in enumerate(result.hand_landmarks):
-                    # landmarks: list 21 điểm, mỗi điểm có x, y (normalized)
-                    # Validate và clamp x, y trong khoảng [0, 1] để tránh crash nếu MediaPipe trả về giá trị lỗi
-                    landmarks_array = np.array([
-                        [max(0.0, min(1.0, lm.x)) * frame_w, max(0.0, min(1.0, lm.y)) * frame_h, 1.0] 
-                        for lm in landmarks
-                    ], dtype=np.float32)
+                    # Validate số lượng landmarks
+                    if len(landmarks) != NUM_LANDMARKS:
+                        continue
                     
-                    # Apply EMA smoothing to reduce jitter
-                    landmarks_array = apply_ema_smoothing(hand_idx, landmarks_array, alpha=EMA_ALPHA)
+                    # landmarks: list 21 điểm, mỗi điểm có x, y (normalized [0,1] từ MediaPipe)
+                    # Validate và clamp x, y trong khoảng [0, 1] để tránh crash nếu MediaPipe trả về giá trị lỗi
+                    landmarks_normalized = np.array([[lm.x, lm.y] for lm in landmarks], dtype=np.float32)
+                    landmarks_normalized = np.clip(landmarks_normalized, 0.0, 1.0)
+                    
+                    # Apply EMA smoothing to reduce jitter (trên normalized coordinates [0,1])
+                    landmarks_normalized = apply_ema_smoothing(hand_idx, landmarks_normalized, alpha=EMA_ALPHA)
+                    
+                    # Convert sang pixel coordinates để vẽ
+                    landmarks_array = np.zeros((NUM_LANDMARKS, 3), dtype=np.float32)
+                    landmarks_array[:, 0] = landmarks_normalized[:, 0] * frame_w
+                    landmarks_array[:, 1] = landmarks_normalized[:, 1] * frame_h
+                    landmarks_array[:, 2] = 1.0
                     
                     xs = landmarks_array[:, 0]
                     ys = landmarks_array[:, 1]
-
+                    
+                    
                     # Bounding box theo keypoints
                     min_x, max_x = int(xs.min()), int(xs.max())
                     min_y, max_y = int(ys.min()), int(ys.max())
@@ -1158,6 +1622,7 @@ def update_frame():
 
                     # Lọc thêm theo độ tin cậy handedness để tránh patch mờ mờ bị gán tay
                     handedness_label = "Hand"
+                    handedness_label_clean = None  # Lưu clean label để dùng cho validation sau này
                     handedness_score = 1.0
                     if result.handedness and len(result.handedness) > hand_idx:
                         entry = result.handedness[hand_idx]
@@ -1171,15 +1636,132 @@ def update_frame():
                         name = getattr(cat, "category_name", None) or getattr(cat, "label", None) or "Hand"
                         score = getattr(cat, "score", None) or getattr(cat, "confidence", None) or 1.0
                         handedness_label = f"{name}:{float(score):.2f}"
+                        handedness_label_clean = name  # Lưu clean label (chỉ "Left" hoặc "Right")
                         handedness_score = float(score)
                     # Nếu độ tin cậy handedness quá thấp thì bỏ qua (không vẽ tay)
                     # Loại bỏ các detection không chắc chắn (có thể là false positive)
                     if handedness_score < HANDEDNESS_SCORE_THRESHOLD:
                         continue
+                    
+                    # ========== GESTURE CLASSIFICATION ==========
+                    # Chỉ predict gesture khi bounding box đã hợp lệ
+                    
+                    # FILTER: Kiểm tra orientation validity TRƯỚC khi predict
+                    # Reject nếu orientation không ổn định (magnitude quá nhỏ)
+                    orientation_valid, y_hand_mag, x_hand_mag = check_orientation_validity(landmarks_normalized)
+                    if not orientation_valid:
+                        # Orientation không ổn định → không đáng tin, bỏ qua prediction
+                        if hand_idx in gesture_voters:
+                            gesture_voters[hand_idx].reset()  # Reset voter để tránh tích lũy votes sai
+                        gesture_display = f"Unstable Orientation (Y:{y_hand_mag:.3f}, X:{x_hand_mag:.3f})"
+                        vote_confidence = 0.0
+                        # Vẽ bounding box nhưng không hiển thị gesture
+                        # (sẽ được xử lý ở phần vẽ bên dưới)
+                    else:
+                        # Extract NUM_FEATURES features từ normalized landmarks [0,1] (42 landmarks + 2 Y_hand + 2 X_hand)
+                        features = normalize_features(landmarks_normalized).astype(np.float32)
+                        
+                        # Predict gesture
+                        features_reshaped = features.reshape(1, NUM_FEATURES).astype(np.float32)
+                        # SavedModel đã được compiled khi save, không cần compile lại
+                        # tf.function compile function thành graph → nhanh hơn rất nhiều
+                        predictions = predict_gesture(features_reshaped)
+                        # Convert TensorFlow tensor về numpy
+                        predictions_np = predictions.numpy() if hasattr(predictions, 'numpy') else np.array(predictions)
+                        probs = predictions_np[0]  # Probability distribution
+                        
+                        # Lấy top-1 prediction
+                        top1_idx = int(np.argmax(probs))
+                        confidence = float(probs[top1_idx])
+                        class_id = top1_idx
+                        
+                        # Tính entropy của probability distribution
+                        # Entropy cao = phân phối phẳng = không chắc → reject
+                        # Entropy thấp = phân phối tập trung = chắc → accept
+                        EPSILON = 1e-10  # Tránh log(0)
+                        entropy = -np.sum(probs * np.log(probs + EPSILON))
+                        
+                        # Kiểm tra class_id hợp lệ
+                        if class_id not in label_mapping:
+                            print(f"Warning: class_id {class_id} không có trong label_mapping, bỏ qua prediction")
+                            continue
+                        raw_label = label_mapping[class_id]
+                        
+                        # FILTER 0: Kiểm tra entropy (tránh phân phối phẳng = không chắc)
+                        if entropy > ENTROPY_THRESHOLD:
+                            # Entropy cao = nhiều class có xác suất gần nhau = không chắc → reject
+                            if hand_idx in gesture_voters:
+                                gesture_voters[hand_idx].reset()
+                            gesture_display = f"High Entropy ({entropy:.2f}, uncertain)"
+                            vote_confidence = 0.0
+                        # FILTER 1: Reject cứng nếu confidence quá thấp → Unknown
+                        elif confidence < GESTURE_REJECT_THRESHOLD:
+                            if hand_idx in gesture_voters:
+                                gesture_voters[hand_idx].reset()
+                            gesture_display = f"Unknown (conf:{confidence:.2f})"
+                            vote_confidence = 0.0
+                        else:
+                            # Tất cả filters đều pass → prediction hợp lệ, xử lý với GestureVoter
+                            if hand_idx not in gesture_voters:
+                                gesture_voters[hand_idx] = GestureVoter(
+                                    acceptance_time=GESTURE_VOTER_ACCEPTANCE_TIME,
+                                    vote_lifetime=GESTURE_VOTER_VOTE_LIFETIME,
+                                    vote_threshold=GESTURE_VOTER_VOTE_THRESHOLD,
+                                    min_votes=GESTURE_VOTER_MIN_VOTES
+                                )
+                            
+                            # FILTER: Bỏ qua S_Nothing khi có hand (false positive)
+                            # S_Nothing chỉ hợp lệ khi không có hand (đã xử lý ở trên)
+                            if raw_label == 'S_Nothing':
+                                # Model predict Nothing nhưng có hand → false positive, bỏ qua
+                                gesture_voters[hand_idx].reset()  # Reset voter để tránh tích lũy votes sai
+                                gesture_display = "Unknown"
+                                vote_confidence = 0.0
+                            else:
+                                final_label, vote_ratio = gesture_voters[hand_idx].vote(raw_label, confidence)
+                            
+                            # Xử lý kết quả và map label
+                            if final_label is None:
+                                # Chưa đạt threshold → hiển thị progress
+                                vote_progress, time_progress = gesture_voters[hand_idx].get_progress()
+                                gesture_display = f"Processing... ({vote_progress:.0f}% votes, {time_progress:.0f}% time)"
+                                vote_confidence = 0.0
+                            else:
+                                # Đã đạt threshold → validate handedness cho asymmetric gestures
+                                # (handedness_label_clean đã được lấy ở trên)
+                                
+                                # FILTER: Validate handedness cho asymmetric gestures
+                                is_valid_handedness, expected_hand, mismatch_reason = validate_handedness_for_prediction(
+                                    final_label, handedness_label_clean
+                                )
+                                
+                                if not is_valid_handedness:
+                                    # Handedness không khớp → reject prediction này
+                                    if hand_idx in gesture_voters:
+                                        gesture_voters[hand_idx].reset()  # Reset voter để tránh tích lũy votes sai
+                                    gesture_display = f"Handedness Mismatch ({mismatch_reason})"
+                                    vote_confidence = 0.0
+                                else:
+                                    # Handedness hợp lệ → map label và hiển thị
+                                    gesture_display = map_prediction_label(final_label, handedness_label_clean, SYMMETRIC_GESTURES)
+                                    vote_confidence = vote_ratio * 100
+                                    
+                                    # Publish gesture qua MQTT
+                                    try:
+                                        publish_gesture_command(
+                                            gesture_label=gesture_display,
+                                            confidence=vote_confidence,
+                                            hand_id=hand_idx,
+                                            handedness=handedness_label_clean
+                                        )
+                                    except Exception as e:
+                                        print(f"⚠ MQTT Publish error: {e}")
+                    # ============================================
 
                     color = get_track_color(hand_idx)  # dùng index tay làm ID tạm
 
-                    label = f"ID:{hand_idx} {handedness_label}"
+                    # Label với gesture classification
+                    label = f"ID:{hand_idx} {handedness_label} | Gesture: {gesture_display} ({vote_confidence:.1f}%)"
                     
                     # Vẽ bounding box
                     cv2.rectangle(annotated_frame, (min_x, min_y), (max_x, max_y), color, 2)
@@ -1215,6 +1797,15 @@ def update_frame():
 
             except Exception as e:
                 print(f"⚠ Error drawing MediaPipe results: {e}")
+            
+            # Cleanup voters cho hands không còn xuất hiện (xóa khỏi dict để tránh memory leak)
+            # Đảm bảo cleanup ngay cả khi có exception trong quá trình xử lý
+            if result and result.hand_landmarks:
+                current_hand_indices = set(range(len(result.hand_landmarks)))
+                for hand_idx in list(gesture_voters.keys()):
+                    if hand_idx not in current_hand_indices:
+                        gesture_voters[hand_idx].reset()
+                        del gesture_voters[hand_idx]
         
         # Hiển thị với Tkinter
         try:
@@ -1430,6 +2021,14 @@ try:
     landmarker.close()
 except Exception:
     pass
+
+# Disconnect MQTT Publisher
+try:
+    mqtt_pub = get_mqtt_publisher()
+    if mqtt_pub:
+        mqtt_pub.disconnect()
+except Exception as e:
+    print(f"⚠ MQTT Disconnect error: {e}")
 
 # Cleanup Tkinter (nếu chưa được destroy)
 try:
