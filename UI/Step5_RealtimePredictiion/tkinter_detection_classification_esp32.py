@@ -40,8 +40,10 @@ NUM_FEATURES = 46  # 42 landmarks (21 * 2) + 2 Y_hand + 2 X_hand = 46 features
 # ========== 1. CONFIGURATION ==========
 # Camera settings - ESP32 Camera Stream
 # Thay đổi IP và port theo ESP32 của bạn
-# Ví dụ: "http://192.168.1.100:81/stream" hoặc "http://esp32-cam.local:81/stream"
-SOURCE = "http://192.168.115.179:80/stream"  # ESP32 camera stream URL (LUÔN LUÔN dùng ESP32)
+# Ví dụ: "http://192.168.1.100:80/stream" hoặc "http://esp32-cam.local:80/stream"
+# LƯU Ý: Test URL bằng browser trước: mở http://esp32-cam.local/stream
+# Nếu thấy video → URL đúng. Nếu không thấy → ESP32 chưa sẵn sàng hoặc URL sai
+SOURCE = "http://esp32-cam.local/stream"  # ESP32 camera stream URL (MJPEG multipart stream)
 
 # Performance settings
 NUM_HANDS = 1  # Chỉ 1 tay (ESP32 thường chỉ detect 1 tay)
@@ -672,50 +674,86 @@ stop_flag = threading.Event()
 queue_drop_count = 0
 queue_drop_lock = threading.Lock()
 
+# System activation state variables
+system_active = False
+last_activity_time = time.time()
+SYSTEM_TIMEOUT_SECONDS = 10.0
+
 def frame_grabber_thread():
     """
-    Thread 1: Đọc frame từ camera và đưa vào queue.
+    Thread 1: Đọc frame từ ESP32 camera stream và đưa vào queue.
+    Có retry logic và tự động reconnect khi ESP32 disconnect.
     """
     global queue_drop_count
-    # ESP32 stream: dùng default backend (không dùng MSMF)
-    cap = cv2.VideoCapture(stream_url)
     
-    if not cap.isOpened():
-        print("✗ Error: Cannot open video source")
-        stop_flag.set()
-        return
+    # Retry logic cho ESP32 stream
+    MAX_RETRIES = 5
+    retry_count = 0
     
-    # Tối ưu OpenCV settings
-    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # Giảm buffer để giảm latency
-    cap.set(cv2.CAP_PROP_FPS, target_fps)  # Set FPS nếu camera support
-    
-    frame_id = 0
-    while not stop_flag.is_set():
-        ret, frame = cap.read()
-        if not ret:
-            print("✗ End of stream or error reading frame")
-            break
+    while retry_count < MAX_RETRIES and not stop_flag.is_set():
+        # Force FFMPEG backend cho MJPEG stream (tốt hơn default backend)
+        cap = cv2.VideoCapture(stream_url, cv2.CAP_FFMPEG)
         
-        frame_id += 1
-        frame_time = time.time()
+        if not cap.isOpened():
+            retry_count += 1
+            print(f"✗ Cannot open ESP32 stream (attempt {retry_count}/{MAX_RETRIES})")
+            print(f"  → Check: ESP32 online? URL correct? WiFi stable?")
+            print(f"  → Test URL in browser: {stream_url}")
+            time.sleep(2)
+            continue
         
-        frame_for_display = frame.copy()
+        # Tối ưu cho MJPEG stream
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 2)  # 2 frames buffer cho MJPEG (cân bằng latency và stability)
         
+        print(f"✓ ESP32 stream connected: {stream_url}")
+        retry_count = 0  # Reset retry khi connect thành công
+        
+        frame_id = 0
+        consecutive_failures = 0
+        MAX_CONSECUTIVE_FAILURES = 30  # Cho phép 30 frames fail trước khi reconnect
+        
+        while not stop_flag.is_set():
+            ret, frame = cap.read()
+            if not ret:
+                consecutive_failures += 1
+                if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
+                    print(f"Too many consecutive failures ({consecutive_failures}), reconnecting...")
+                    break
+                time.sleep(0.05)  # Đợi 50ms trước khi retry
+                continue
+            
+            consecutive_failures = 0  # Reset khi đọc thành công
+            frame_id += 1
+            frame_time = time.time()
+            
+            frame_for_display = frame.copy()
+            
+            try:
+                frame_queue.put((frame_id, frame, frame_time), timeout=0.01)
+            except Full:
+                with queue_drop_lock:
+                    queue_drop_count += 1
+            
+            try:
+                display_frame_queue.put((frame_id, frame_for_display, frame_time), timeout=0.01)
+            except Full:
+                pass
+        
+        # Release và retry nếu connection bị mất
         try:
-            frame_queue.put((frame_id, frame, frame_time), timeout=0.01)
-        except Full:
-            with queue_drop_lock:
-                queue_drop_count += 1
-        
-        try:
-            display_frame_queue.put((frame_id, frame_for_display, frame_time), timeout=0.01)
-        except Full:
+            cap.release()
+        except Exception:
             pass
+        
+        if not stop_flag.is_set():
+            print("  → Reconnecting to ESP32...")
+            time.sleep(1)
     
-    try:
-        cap.release()
-    except Exception:
-        pass
+    if retry_count >= MAX_RETRIES:
+        print(f"✗ Failed to connect after {MAX_RETRIES} retries")
+        print(f"  → Check ESP32: Is it running? Is URL correct?")
+        print(f"  → Test in browser: {stream_url}")
+    
     stop_flag.set()
     print("Thread 1 (Frame Grabber) stopped")
 
@@ -1438,6 +1476,7 @@ def update_frame():
     global latest_detection, current_photo
     global inference_fps_list, inference_times, input_fps_list, fps_list, frame_intervals, display_latencies
     global cached_container_size, cached_metrics_values, is_paused
+    global system_active, last_activity_time
     
     if stop_flag.is_set():
         if root:
@@ -1538,6 +1577,11 @@ def update_frame():
         
         frame_count += 1
         
+        # KIỂM TRA TIMEOUT ĐỂ TẮT CHẾ ĐỘ NHẬN LỆNH
+        if system_active and (time.time() - last_activity_time) > SYSTEM_TIMEOUT_SECONDS:
+            system_active = False
+            print("SYSTEM DEACTIVATED due to 7s inactivity")
+
         # Số bàn tay (dựa trên MediaPipe)
         num_objects = 0
         if result and result.hand_landmarks:
@@ -1563,6 +1607,11 @@ def update_frame():
         
         # Visualization (MediaPipe hand landmarks + bounding box)
         annotated_frame = frame_original.copy()
+        
+        # Hiển thị trạng thái hệ thống (Active/Idle)
+        status_text = "SYSTEM: ACTIVE" if system_active else "SYSTEM: IDLE (Wait for 'Start')"
+        status_color = (0, 255, 0) if system_active else (0, 0, 255) # Green if Active, Red if Idle
+        cv2.putText(annotated_frame, status_text, (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.8, status_color, 2)
         
         # ========== XỬ LÝ KHI KHÔNG CÓ HAND ==========
         has_hand = result and result.hand_landmarks and len(result.hand_landmarks) > 0
@@ -1748,14 +1797,38 @@ def update_frame():
                                     
                                     # Publish gesture qua MQTT
                                     try:
-                                        publish_gesture_command(
-                                            gesture_label=gesture_display,
-                                            confidence=vote_confidence,
-                                            hand_id=hand_idx,
-                                            handedness=handedness_label_clean
-                                        )
+                                        # LỆNH THỰC TẾ: Bỏ các tiền tố A_RH_, A_LH_, S_, RH_, LH_ để ESP32 hiểu
+                                        clean_command = final_label.replace(ASYMMETRIC_PREFIX_RH, "").replace(ASYMMETRIC_PREFIX_LH, "").replace(SYMMETRIC_PREFIX, "")
+                                        
+                                        # Logic Kích hoạt/Tắt hệ thống theo nhãn Start
+                                        if clean_command == "Start":
+                                            if not system_active:
+                                                system_active = True
+                                                print("SYSTEM ACTIVATED by Start gesture")
+                                                # Gửi lệnh Start sang ESP32 để báo hiệu (còi kêu)
+                                                # Dùng force=True vì sau 7s timeout, last_gesture của MQTT vẫn là 'Start'
+                                                publish_gesture_command(
+                                                    gesture_label=clean_command,
+                                                    confidence=vote_confidence,
+                                                    hand_id=hand_idx,
+                                                    handedness=handedness_label_clean,
+                                                    force=True
+                                                )
+                                            last_activity_time = time.time() # Cập nhật thời gian khi thấy Start
+                                        
+                                        elif system_active:
+                                            # Nếu đang ở chế độ nhận lệnh, gửi tất cả các lệnh khác Start
+                                            # Tránh gửi Start liên tục khi đã active
+                                            publish_gesture_command(
+                                                gesture_label=clean_command,
+                                                confidence=vote_confidence,
+                                                hand_id=hand_idx,
+                                                handedness=handedness_label_clean
+                                            )
+                                            last_activity_time = time.time() # Cập nhật thời gian khi có lệnh hợp lệ
+                                            
                                     except Exception as e:
-                                        print(f"⚠ MQTT Publish error: {e}")
+                                        print(f"MQTT Publish error: {e}")
                     # ============================================
 
                     color = get_track_color(hand_idx)  # dùng index tay làm ID tạm

@@ -1,45 +1,10 @@
 // ESP32-S3 N16R8 + OV2640
-// Stream MJPEG qua HTTP: /stream (multipart) và /jpg (single frame)
+// Stream MJPEG qua HTTP: /stream (multipart)
 // Board: ESP32-S3, Flash 16MB, PSRAM 8MB. WiFi STA.
-//
-// ====== TỔNG HỢP TỐI ƯU FPS ĐÃ ÁP DỤNG ======
-// 1. WiFi Power Save: TẮT (WIFI_PS_NONE)
-//    → esp_wifi_set_ps(WIFI_PS_NONE) - WiFi luôn hoạt động (~80-100mA)
-//    → Giảm lag, tăng FPS ổn định
-//
-// 2. Camera Config:
-//    → xclk_freq_hz = tốc độ clock của camera
-//    → grab_mode = CAMERA_GRAB_LATEST (luôn lấy frame mới nhất, bỏ qua frame cũ)
-//    → fb_location = CAMERA_FB_IN_PSRAM (dùng PSRAM thay SRAM → ổn định hơn)
-//    → JPEG quality càng cao → file càng lớn → truyền chậm → FPS thấp → không mượt.
-//      JPEG quality càng thấp → file càng nhỏ → truyền nhanh → FPS cao → mượt hơn.
-//    → FB_COUNT = buffering
-//
-// 3. Sensor Tuning (giảm xử lý không cần thiết):
-//    → Tắt: denoise, colorbar, black pixel correction
-//    → Bật: AWB gain, exposure control, gamma, lens correction
-//    → Brightness/Contrast/Saturation = 0 (không xử lý thêm)
-//
-// 4. HTTP Server Config:
-//    → lru_purge_enable = true (tự động dọn client cũ)
-//    → backlog_conn = số lượng hàng đợi kết nối
-//
-// 5. FreeRTOS Tasks (tối ưu):
-//    → Code chạy trong tasks thay vì loop() → không block
-//    → Thay delay() bằng vTaskDelay() → cho phép task khác chạy
-//    → Serial prints chỉ khi DEBUG_MODE → giảm overhead
-//    → RTOS ticks: 1000 Hz (config trong menuconfig: CONFIG_FREERTOS_HZ=1000)
-//
-// ====== TỐI ƯU PERFORMANCE ĐÃ ÁP DỤNG ======
-// 1. CPU Frequency: 240MHz → ~200-250mA (ưu tiên FPS cao, performance tốt)
-// 2. WiFi TX Power: 11dBm (thay vì 19.5dBm) → ~50-70mA thay vì ~80-100mA
-// 3. WiFi Power Save: TẮT (WIFI_PS_NONE) → ~80-100mA (ưu tiên FPS, không lag)
-// → Tổng tiêu thụ: ~330-420mA (ưu tiên performance và FPS)
-//
-// ============================================
 
 #include "esp_camera.h"
 #include <WiFi.h>
+#include <ESPmDNS.h>
 #include "esp_http_server.h"
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
@@ -54,10 +19,11 @@ const char *ssid = "ilovehcmute";
 const char *password = "910JQKA2";
 
 // ====== Camera quality/FPS trade-off ======
-// VGA (640x480) - cân bằng chất lượng và FPS
-#define FRAME_SIZE FRAMESIZE_VGA
-#define JPEG_QUALITY 12
-#define FB_COUNT 5 // Double buffering - tốn ~50KB PSRAM (ESP32-S3 có 8MB PSRAM → đủ)
+// HVGA (480x320) - cân bằng chất lượng và FPS
+#define FRAME_SIZE FRAMESIZE_HVGA // 480 x 320
+#define JPEG_QUALITY 35
+// jpeg_quality: số CÀNG LỚN -> chất lượng THẤP hơn -> ảnh NHỎ hơn -> FPS CAO & mượt hơn
+#define FB_COUNT 4 // Buffering (ESP32-S3 có 8MB PSRAM)
 
 // ====== Pinout ESP32-S3 N16R8 + OV2640 (ESP32-S3-EYE layout) ======
 #define PWDN_GPIO_NUM -1
@@ -79,30 +45,12 @@ const char *password = "910JQKA2";
 #define PCLK_GPIO_NUM 13
 
 httpd_handle_t stream_httpd = nullptr;
-// httpd_handle_t jpg_httpd = nullptr; // Giữ lại để sau này có thể dùng riêng server cho /jpg nếu cần
 
 #ifdef DEBUG_MODE
 // FPS counter cho stream (chỉ khi DEBUG_MODE)
 static uint32_t fps_count = 0;
 static uint32_t fps_last_ms = 0;
 #endif
-
-static esp_err_t jpg_handler(httpd_req_t *req)
-{
-  camera_fb_t *fb = esp_camera_fb_get();
-  if (!fb)
-  {
-    httpd_resp_send_500(req);
-    return ESP_FAIL;
-  }
-
-  esp_err_t res = ESP_OK;
-  httpd_resp_set_type(req, "image/jpeg");
-  httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
-  res = httpd_resp_send(req, (const char *)fb->buf, fb->len);
-  esp_camera_fb_return(fb);
-  return res;
-}
 
 static const char *STREAM_CONTENT_TYPE = "multipart/x-mixed-replace;boundary=frame";
 static const char *STREAM_BOUNDARY = "\r\n--frame\r\n";
@@ -114,8 +62,19 @@ static esp_err_t stream_handler(httpd_req_t *req)
   httpd_resp_set_type(req, STREAM_CONTENT_TYPE);
   httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
 
+  static uint32_t last = 0; // Giới hạn FPS để tránh quá tải khi chạy lâu
+
   while (true)
   {
+    // Giới hạn FPS ~15 FPS (66ms/frame) để tránh quá tải khi chạy lâu
+    uint32_t now = millis();
+    if (now - last < 66) // ~15 FPS (1000ms / 15 ≈ 66ms)
+    {
+      vTaskDelay(pdMS_TO_TICKS(2));
+      continue;
+    }
+    last = now;
+
     camera_fb_t *fb = esp_camera_fb_get();
     if (!fb)
     {
@@ -132,9 +91,9 @@ static esp_err_t stream_handler(httpd_req_t *req)
     }
     if (res == ESP_OK)
     {
-      // Gửi theo chunks 4KB để giảm overhead và tăng FPS 5-10%
+      // Gửi theo chunks 8KB để giảm overhead
       size_t sent = 0;
-      const size_t chunk_size = 4096; // 4KB chunks
+      const size_t chunk_size = 8192; // 8KB chunks
       while (sent < fb->len && res == ESP_OK)
       {
         size_t to_send = (fb->len - sent > chunk_size) ? chunk_size : (fb->len - sent);
@@ -155,12 +114,12 @@ static esp_err_t stream_handler(httpd_req_t *req)
 #ifdef DEBUG_MODE
     // FPS counter (chỉ khi DEBUG_MODE)
     fps_count++;
-    uint32_t now = millis();
-    if (now - fps_last_ms >= 1000)
+    uint32_t now_debug = millis();
+    if (now_debug - fps_last_ms >= 1000)
     {
       Serial.printf("Stream FPS: %u\n", fps_count);
       fps_count = 0;
-      fps_last_ms = now;
+      fps_last_ms = now_debug;
     }
 #endif
 
@@ -178,16 +137,10 @@ void startCameraServer()
   httpd_config_t config = HTTPD_DEFAULT_CONFIG();
   config.server_port = 80;
   config.ctrl_port = 32769;       // tránh xung đột cổng điều khiển mặc định
-  config.max_uri_handlers = 2;    // Dự phòng cho nhiều endpoints (hiện tại 2: /stream và /jpg)
-  config.max_open_sockets = 2;    // Dự phòng cho nhiều client (hiện tại tối ưu cho 1 client)
+  config.max_uri_handlers = 1;    // Chỉ 1 endpoint: /stream (ít handler → scheduling đều hơn → performance tốt hơn)
+  config.max_open_sockets = 1;    // Client (hiện tại tối ưu cho 1 client)
   config.lru_purge_enable = true; // dọn client cũ
   config.backlog_conn = 5;        // hàng đợi kết nối
-
-  httpd_uri_t jpg_uri = {
-      .uri = "/jpg",
-      .method = HTTP_GET,
-      .handler = jpg_handler,
-      .user_ctx = nullptr};
 
   httpd_uri_t stream_uri = {
       .uri = "/stream",
@@ -198,8 +151,7 @@ void startCameraServer()
   if (httpd_start(&stream_httpd, &config) == ESP_OK)
   {
     httpd_register_uri_handler(stream_httpd, &stream_uri);
-    httpd_register_uri_handler(stream_httpd, &jpg_uri);
-    Serial.printf("HTTP server started on port %u\n", config.server_port);
+    Serial.printf("HTTP server started on port %u (endpoint: /stream)\n", config.server_port);
   }
   else
   {
@@ -280,7 +232,7 @@ void wifiTask(void *pvParameters)
       // Đã connected
       if (!was_connected)
       {
-        // Vừa reconnect thành công (trường hợp hiếm)
+        // Vừa reconnect thành công
         Serial.println("WiFi connected!");
         Serial.print("IP address: ");
         Serial.println(WiFi.localIP());
@@ -299,8 +251,8 @@ void setup()
   Serial.println();
 #endif
 
-  // Set CPU frequency lên 240MHz để tăng performance (FPS cao hơn)
-  setCpuFrequencyMhz(240);
+  // Set CPU frequency
+  setCpuFrequencyMhz(160);
 
   camera_config_t config;
   config.ledc_channel = LEDC_CHANNEL_0;
@@ -321,7 +273,7 @@ void setup()
   config.pin_sccb_scl = SIOC_GPIO_NUM;
   config.pin_pwdn = PWDN_GPIO_NUM;
   config.pin_reset = RESET_GPIO_NUM;
-  config.xclk_freq_hz = 20000000; // 20 MHz
+  config.xclk_freq_hz = 18000000; // 18 MHz
   config.pixel_format = PIXFORMAT_JPEG;
   config.frame_size = FRAME_SIZE;
   config.jpeg_quality = JPEG_QUALITY;
@@ -333,7 +285,6 @@ void setup()
   if (err != ESP_OK)
   {
     Serial.printf("Camera init failed with error 0x%x\n", err);
-    Serial.println("Camera là bắt buộc cho streaming. Restarting ESP32...");
     Serial.println("Kiểm tra pinout và kết nối camera.");
     vTaskDelay(pdMS_TO_TICKS(3000)); // Đợi 3 giây để Serial log kịp gửi
     ESP.restart();                   // Restart để thử lại
@@ -373,8 +324,7 @@ void setup()
   // WiFi Power: Mặc định có thể là 19.5dBm, 20dBm, hoặc 20.5dBm tùy chuẩn (802.11b/g)
   // Arduino framework thường mặc định ~19.5-20dBm
   // WIFI_POWER_19_5dBm: ~80-100mA | WIFI_POWER_11dBm: ~50-70mA | WIFI_POWER_8_5dBm: ~40-60mA
-  // WiFi.setTxPower(WIFI_POWER_19_5dBm); // ĐÃ TẮT - Công suất cao tiêu tốn nhiều điện (~80-100mA)
-  WiFi.setTxPower(WIFI_POWER_11dBm); // Giảm công suất phát → tiết kiệm điện (~50-70mA), phạm vi WiFi ngắn hơn một chút
+  WiFi.setTxPower(WIFI_POWER_11dBm); // Giảm công suất phát, phạm vi WiFi ngắn hơn một chút
   WiFi.begin(ssid, password);
   Serial.printf("Connecting to %s", ssid);
   while (WiFi.status() != WL_CONNECTED)
@@ -384,19 +334,26 @@ void setup()
   }
   Serial.println();
 
-  // WiFi Power Save: WIFI_PS_NONE (tắt) - Tắt power save để giảm lag, tăng FPS
-  // WIFI_PS_NONE: ~80-100mA (luôn hoạt động, không lag) | WIFI_PS_MIN_MODEM: ~50-70mA (tiết kiệm nhưng có lag)
-  esp_wifi_set_ps(WIFI_PS_NONE); // TẮT power save → giảm lag, tăng FPS (~80-100mA)
+  // WiFi Power Save: WIFI_PS_NONE (tắt)
+  esp_wifi_set_ps(WIFI_PS_NONE); // TẮT power save
 
   Serial.println("WiFi connected");
   Serial.print("IP address: ");
   Serial.println(WiFi.localIP());
 
+  // Khởi tạo mDNS
+  if (!MDNS.begin("esp32-cam"))
+  {
+    Serial.println("Error setting up MDNS responder!");
+  }
+  else
+  {
+    Serial.println("mDNS responder started: http://esp32-cam.local");
+  }
+
   startCameraServer();
   Serial.println("Camera stream ready.");
-  Serial.print("Mở URL: http://");
-  Serial.print(WiFi.localIP());
-  Serial.println("/stream");
+  Serial.println("Mở URL: http://esp32-cam.local/stream");
 
   // Tạo FreeRTOS task cho WiFi management
   xTaskCreate(
