@@ -2,13 +2,15 @@ import paho.mqtt.client as mqtt
 import json
 import time
 import threading
+import socket
 from typing import Optional
+from zeroconf import ServiceInfo, Zeroconf
 
 # ==========================================
 # 1. CẤU HÌNH HỆ THỐNG MQTT
 # ==========================================
-# IP của máy tính đang chạy Mosquitto Broker
-MQTT_BROKER_HOST = "192.168.115.253"
+# Sử dụng localhost vì Python chạy cùng máy với Mosquitto Broker
+MQTT_BROKER_HOST = "localhost" 
 # Cổng mặc định của giao thức MQTT
 MQTT_BROKER_PORT = 1883
 # Thời gian giữ kết nối (giây)
@@ -46,8 +48,35 @@ class MQTTPublisher:
         self.last_gesture = None        # Lưu tên cử chỉ cuối cùng đã gửi thành công
         self.last_gesture_time = 0.0    # Lưu thời điểm gửi cử chỉ cuối cùng
         
+        # Thiết lập mDNS để ESP32 tự tìm thấy máy tính
+        self.zc = Zeroconf()
+        self._advertise_service()
+        
         self._setup_client()
     
+    def _advertise_service(self):
+        # Quảng bá dịch vụ MQTT qua mDNS để ESP32 tự tìm thấy IP máy tính
+        try:
+            desc = {'version': '1.0'}
+            # Lấy IP local của máy tính
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(("8.8.8.8", 80))
+            local_ip = s.getsockname()[0]
+            s.close()
+            
+            info = ServiceInfo(
+                "_mqtt._tcp.local.",
+                "Mosquitto Broker._mqtt._tcp.local.",
+                addresses=[socket.inet_aton(local_ip)],
+                port=MQTT_BROKER_PORT,
+                properties=desc,
+                server="mosquitto.local.",
+            )
+            self.zc.register_service(info)
+            print(f"mDNS: Đang quảng bá dịch vụ MQTT tại {local_ip}:{MQTT_BROKER_PORT}")
+        except Exception as e:
+            print(f"mDNS Advertisement failed: {e}")
+
     def _setup_client(self):
         self.client = mqtt.Client(client_id=self.client_id)
         self.client.on_connect = self._on_connect
@@ -79,6 +108,9 @@ class MQTTPublisher:
             return False
     
     def disconnect(self):
+        if self.zc:
+            self.zc.unregister_all_services()
+            self.zc.close()
         if self.client:
             self.client.loop_stop()
             self.client.disconnect()

@@ -10,22 +10,22 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
-// ====== Debug Mode ======
+// Debug Mode
 // Bỏ comment dòng dưới để bật debug (Serial prints + FPS counter)
 // #define DEBUG_MODE
 
-// ====== WiFi ======
+// WiFi
 const char *ssid = "ilovehcmute";
 const char *password = "910JQKA2";
 
-// ====== Camera quality/FPS trade-off ======
+// Camera quality/FPS trade-off
 // HVGA (480x320) - cân bằng chất lượng và FPS
 #define FRAME_SIZE FRAMESIZE_HVGA // 480 x 320
 #define JPEG_QUALITY 35
 // jpeg_quality: số CÀNG LỚN -> chất lượng THẤP hơn -> ảnh NHỎ hơn -> FPS CAO & mượt hơn
-#define FB_COUNT 4 // Buffering (ESP32-S3 có 8MB PSRAM)
+#define FB_COUNT 2 // Buffering (ESP32-S3 có 8MB PSRAM)
 
-// ====== Pinout ESP32-S3 N16R8 + OV2640 (ESP32-S3-EYE layout) ======
+// Pinout ESP32-S3 N16R8 + OV2640 (ESP32-S3-EYE layout)
 #define PWDN_GPIO_NUM -1
 #define RESET_GPIO_NUM -1
 #define XCLK_GPIO_NUM 15

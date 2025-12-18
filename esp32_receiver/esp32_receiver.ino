@@ -4,10 +4,9 @@
 #include <PubSubClient.h>
 #include <ArduinoJson.h>
 
-// ================= CONFIGURATION =================
+// CONFIGURATION
 const char *ssid = "ilovehcmute";
 const char *password = "910JQKA2";
-const char *mqtt_broker = "192.168.115.253";
 const int mqtt_port = 1883;
 const char *mqtt_client_id = "esp32_receiver";
 const char *mqtt_topic_gesture = "gesture/command";
@@ -50,8 +49,9 @@ bool light2_state = false;
 // MQTT & WIFI CLIENTS
 WiFiClient espClient;
 PubSubClient mqtt_client(espClient);
+String discovered_mqtt_broker = "";
 
-// ================= BUZZER HELPERS =================
+// BUZZER HELPERS
 void initBuzzer()
 {
   ledcAttach(BUZZER_PIN, 2000, 8);
@@ -78,7 +78,7 @@ void buzzerStartBeep()
   buzzerTone(1600, 160);
 }
 
-// ================= HARDWARE CONTROL =================
+// HARDWARE CONTROL
 void led1On()
 {
   digitalWrite(LED_IN1, HIGH);
@@ -193,7 +193,7 @@ void moveServo2Smooth(int targetAngle, int stepDelay = 20)
   servo2CurrentAngle = targetAngle;
 }
 
-// ================= NETWORK & MQTT =================
+// NETWORK & MQTT
 void connectWiFi()
 {
   Serial.print("→ Connecting WiFi: ");
@@ -220,10 +220,31 @@ void connectMQTT()
 {
   if (WiFi.status() != WL_CONNECTED)
     return;
+
+  // Tự động tìm IP Broker
+  if (discovered_mqtt_broker == "")
+  {
+    Serial.println("mDNS: Đang tìm MQTT Broker trong mạng...");
+    int n = MDNS.queryService("mqtt", "tcp");
+    if (n > 0)
+    {
+      discovered_mqtt_broker = MDNS.address(0).toString();
+      Serial.print("mDNS: Đã tìm thấy Broker tại: ");
+      Serial.println(discovered_mqtt_broker);
+      mqtt_client.setServer(discovered_mqtt_broker.c_str(), mqtt_port);
+    }
+    else
+    {
+      Serial.println("mDNS: Không tìm thấy Broker nào trong mạng. Đang thử lại...");
+      delay(2000);
+      return; // Thoát ra để loop() gọi lại connectMQTT và quét lại
+    }
+  }
+
   while (!mqtt_client.connected())
   {
     Serial.print("→ Connecting MQTT: ");
-    Serial.println(mqtt_broker);
+    Serial.println(discovered_mqtt_broker);
     if (mqtt_client.connect(mqtt_client_id))
     {
       Serial.println("✓ MQTT Connected!");
@@ -235,6 +256,10 @@ void connectMQTT()
       Serial.println(mqtt_client.state());
       Serial.println("  (Sẽ thử lại sau 2 giây...)");
       delay(2000);
+
+      // Nếu lỗi, reset để tìm lại mDNS ở lần sau
+      discovered_mqtt_broker = "";
+      return; // Thoát để loop() gọi lại connectMQTT và quét lại
     }
   }
 }
@@ -246,7 +271,7 @@ void parse_gesture_message(const char *json_string)
     return;
 
   const char *gesture = doc["gesture"] | "UNKNOWN";
-  Serial.print("📨 Gesture: ");
+  Serial.print("  Gesture: ");
   Serial.println(gesture);
 
   if (strstr(gesture, "Start"))
@@ -382,7 +407,7 @@ void mqtt_callback(char *topic, byte *payload, unsigned int length)
   parse_gesture_message(message);
 }
 
-// ================= SETUP & LOOP =================
+// SETUP & LOOP
 void setup()
 {
   Serial.begin(115200);
@@ -403,9 +428,8 @@ void setup()
 
   initBuzzer();
   connectWiFi();
-  mqtt_client.setServer(mqtt_broker, mqtt_port);
   mqtt_client.setCallback(mqtt_callback);
-  Serial.println("✓ SYSTEM READY");
+  Serial.println("SYSTEM READY");
 }
 
 void loop()
@@ -415,3 +439,4 @@ void loop()
   mqtt_client.loop();
   delay(10);
 }
+s
