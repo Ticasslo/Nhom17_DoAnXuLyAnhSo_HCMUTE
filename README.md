@@ -129,6 +129,96 @@ Nhom17_DoAnXuLyAnhSo_HCMUTE/
   - Mọi lệnh điều khiển khác: beep ngắn **trước khi** thực hiện lệnh.
 - Log Serial chi tiết để debug.
 
+### 3.5 Cài đặt Mosquitto MQTT Broker
+
+Hệ thống cần **Mosquitto MQTT Broker** để kết nối giữa Python UI và ESP32 Receiver.
+
+#### Windows
+
+1. **Tải Mosquitto**:
+
+   - Truy cập: https://mosquitto.org/download/
+   - Tải file `.msi` cho Windows (ví dụ: `mosquitto-2.x.x-install-windows-x64.exe`)
+
+2. **Cài đặt**:
+
+   - Chạy file `.msi`, chọn "Complete installation"
+   - Cài đặt vào thư mục mặc định (thường là `C:\Program Files\mosquitto\`)
+
+3. **Cấu hình** (tùy chọn):
+
+   - Mở file `C:\Program Files\mosquitto\mosquitto.conf` bằng Notepad (cần quyền Admin)
+   - Đảm bảo có các dòng sau để cho phép kết nối từ mạng LAN:
+     ```
+     listener 1883
+     allow_anonymous true
+     ```
+   - **Lưu ý**: `allow_anonymous true` chỉ dùng cho môi trường phát triển/test. Với production nên dùng username/password.
+
+4. **Chạy Mosquitto**:
+
+   - Mở **Command Prompt** hoặc **PowerShell** với quyền Admin
+   - Chạy lệnh:
+     ```bash
+     "C:\Program Files\mosquitto\mosquitto.exe" -c "C:\Program Files\mosquitto\mosquitto.conf"
+     ```
+   - Hoặc nếu đã thêm vào PATH:
+     ```bash
+     mosquitto -c mosquitto.conf
+     ```
+   - Nếu thành công, bạn sẽ thấy log: `mosquitto version x.x.x starting`
+
+5. **Kiểm tra**:
+
+   - Mở terminal khác, chạy:
+     ```bash
+     mosquitto_sub -h localhost -t "test" -v
+     ```
+   - Mở terminal thứ 3, chạy:
+     ```bash
+     mosquitto_pub -h localhost -t "test" -m "Hello MQTT"
+     ```
+   - Nếu thấy "test Hello MQTT" ở terminal đầu tiên → Mosquitto hoạt động đúng.
+
+6. **Chạy tự động khi khởi động** (tùy chọn):
+   - Mở **Services** (Win+R → `services.msc`)
+   - Tìm service "Mosquitto Broker"
+   - Click chuột phải → **Properties** → **Startup type**: chọn **Automatic**
+   - Click **Start** để chạy ngay
+
+#### Linux (Ubuntu/Debian)
+
+```bash
+sudo apt update
+sudo apt install mosquitto mosquitto-clients
+
+# Khởi động service
+sudo systemctl start mosquitto
+sudo systemctl enable mosquitto  # Tự động chạy khi khởi động
+
+# Kiểm tra
+mosquitto_sub -h localhost -t "test" -v
+```
+
+#### macOS
+
+```bash
+# Dùng Homebrew
+brew install mosquitto
+
+# Khởi động service
+brew services start mosquitto
+
+# Kiểm tra
+mosquitto_sub -h localhost -t "test" -v
+```
+
+**Lưu ý quan trọng**:
+
+- Mosquitto phải **chạy trên máy tính** (không phải ESP32)
+- Python UI sẽ tự động lấy IP LAN của máy tính làm broker host
+- ESP32 Receiver sẽ tự tìm broker qua mDNS (không cần cấu hình IP tĩnh)
+
 ---
 
 ## 4. Cách chạy nhanh
@@ -180,5 +270,3 @@ Nhom17_DoAnXuLyAnhSo_HCMUTE/
 - **Đào tạo model**:
   - Dataset được tiền xử lý (ISP) + augmentation cho symmetric gestures.
   - Đảm bảo **normalize features giống hệt** giữa training và realtime.
-
-Hệ thống đã được kiểm tra nhiều vòng, logic chặt, sẵn sàng demo và nộp đồ án.
