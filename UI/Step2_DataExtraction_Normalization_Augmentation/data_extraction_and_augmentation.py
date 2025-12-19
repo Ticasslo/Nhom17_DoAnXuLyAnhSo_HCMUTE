@@ -279,13 +279,14 @@ def normalize_features(landmarks_array):
 # 3. MEDIAPIPE HAND LANDMARKER SETUP
 # ===============================================================
 
+# Đường dẫn model MediaPipe (.task) dùng chung cho TOÀN project: Nhom17_DoAnXuLyAnhSo_HCMUTE/models/hand_landmarker.task
 script_dir = os.path.dirname(os.path.abspath(__file__))
-HAND_LANDMARKER_MODEL_PATH = os.path.join(script_dir, "hand_landmarker.task")
+project_root = os.path.dirname(os.path.dirname(script_dir))  # .../Nhom17_DoAnXuLyAnhSo_HCMUTE
+HAND_LANDMARKER_MODEL_PATH = os.path.join(project_root, "models", "hand_landmarker.task")
 
 if not os.path.exists(HAND_LANDMARKER_MODEL_PATH):
     raise FileNotFoundError(
-        f"Khong tim thay model MediaPipe: {HAND_LANDMARKER_MODEL_PATH}\n"
-        f"Vui long dam bao file hand_landmarker.task co trong thu muc nay."
+        f"Khong tim thay model: {HAND_LANDMARKER_MODEL_PATH}"
     )
 
 BaseOptions = mp.tasks.BaseOptions
@@ -640,19 +641,6 @@ if handedness_mismatch_count > 0:
     print(f"\n[WARNING] Handedness mismatch: {handedness_mismatch_count} samples:")
     for detail in handedness_mismatch_details:
         print(f"  - {detail}")
-
-# In toàn bộ danh sách ảnh bị skip
-if skip_log:
-    print(f"\n[WARNING] Tổng số ảnh bị skip (skip hoàn toàn): {len(skip_log)}")
-    for line in skip_log:
-        print(f"  - {line}")
-
-# In danh sách augmentation failures
-if augmentation_failed_log:
-    print(f"\n[INFO] Tổng số augmentation failures: {len(augmentation_failed_log)}")
-    print(f"  (Ảnh gốc đã được xử lý thành công, chỉ augmentation fail)")
-    for line in augmentation_failed_log:
-        print(f"  - {line}")
 
 print(f"\n{'='*60}\n")
 

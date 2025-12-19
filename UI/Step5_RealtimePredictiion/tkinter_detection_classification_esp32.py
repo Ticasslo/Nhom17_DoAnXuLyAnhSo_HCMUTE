@@ -135,13 +135,16 @@ DETECTION_SKIP_FRAMES = 1  # Số frame bỏ qua giữa các lần detection (0 
 # ---------- 2. Load Gesture Model & Metadata ----------
 script_dir = os.path.dirname(os.path.abspath(__file__))
 
-# Model paths
-GESTURE_MODEL_PATH = os.path.join(script_dir, "SavedModel/saved_model_best")
-METADATA_PATH = os.path.join(script_dir, "SavedModel/metadata.pkl")
+# project_root = .../Nhom17_DoAnXuLyAnhSo_HCMUTE
+project_root = os.path.dirname(os.path.dirname(script_dir))
+
+# Model TF SavedModel + metadata luôn đặt trong: Nhom17_DoAnXuLyAnhSo_HCMUTE/models/SavedModel/
+GESTURE_MODEL_PATH = os.path.join(project_root, "models", "SavedModel", "saved_model_best")
+METADATA_PATH = os.path.join(project_root, "models", "SavedModel", "metadata.pkl")
 
 # Load model
 if not os.path.exists(GESTURE_MODEL_PATH):
-    raise FileNotFoundError(f"Không tìm thấy model: {GESTURE_MODEL_PATH}")
+    raise FileNotFoundError(f"Không tìm thấy model TF: {GESTURE_MODEL_PATH}")
 if not os.path.exists(METADATA_PATH):
     raise FileNotFoundError(f"Không tìm thấy metadata: {METADATA_PATH}")
 
@@ -527,15 +530,16 @@ def map_prediction_label(prediction, handedness_label, SYMMETRIC_GESTURES):
     return prediction
 
 # ---------- 2.4. MediaPipe Hand Landmarker ----------
-# TODO: tải model official từ docs và đặt cạnh script này
-# Ví dụ: https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task
-HAND_LANDMARKER_MODEL_PATH = os.path.join(script_dir, "hand_landmarker.task")
+# Model MediaPipe (.task) dùng chung cho TOÀN project, đặt tại: Nhom17_DoAnXuLyAnhSo_HCMUTE/models/hand_landmarker.task
+# Model TF SavedModel (phân loại cử chỉ) cũng đặt tại: Nhom17_DoAnXuLyAnhSo_HCMUTE/models/SavedModel/...
 
+# project_root = .../Nhom17_DoAnXuLyAnhSo_HCMUTE
+project_root = os.path.dirname(os.path.dirname(script_dir))
+
+# Đường dẫn model MediaPipe
+HAND_LANDMARKER_MODEL_PATH = os.path.join(project_root, "models", "hand_landmarker.task")
 if not os.path.exists(HAND_LANDMARKER_MODEL_PATH):
-    raise FileNotFoundError(
-        f"Không tìm thấy model MediaPipe: {HAND_LANDMARKER_MODEL_PATH}\n"
-        f"Vui lòng tải file .task (hand_landmarker.task) về và đặt cạnh script này."
-    )
+    raise FileNotFoundError(f"Không tìm thấy model MediaPipe: {HAND_LANDMARKER_MODEL_PATH}")
 
 BaseOptions = mp.tasks.BaseOptions
 HandLandmarker = vision.HandLandmarker

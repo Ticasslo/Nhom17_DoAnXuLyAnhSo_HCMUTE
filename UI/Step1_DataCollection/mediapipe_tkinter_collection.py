@@ -49,15 +49,15 @@ DETECTION_SKIP_FRAMES = 1  # Số frame bỏ qua giữa các lần detection (0 
 
 # ---------- 2. MediaPipe Hand Landmarker ----------
 script_dir = os.path.dirname(os.path.abspath(__file__))
-# TODO: tải model official từ docs và đặt cạnh script này
-# Ví dụ: https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task
-HAND_LANDMARKER_MODEL_PATH = os.path.join(script_dir, "hand_landmarker.task")
+
+# Gốc project: .../Nhom17_DoAnXuLyAnhSo_HCMUTE
+project_root = os.path.dirname(os.path.dirname(script_dir))
+
+# Model MediaPipe (.task) dùng chung cho TOÀN project, đặt tại: Nhom17_DoAnXuLyAnhSo_HCMUTE/models/hand_landmarker.task
+HAND_LANDMARKER_MODEL_PATH = os.path.join(project_root, "models", "hand_landmarker.task")
 
 if not os.path.exists(HAND_LANDMARKER_MODEL_PATH):
-    raise FileNotFoundError(
-        f"Không tìm thấy model MediaPipe: {HAND_LANDMARKER_MODEL_PATH}\n"
-        f"Vui lòng tải file .task (hand_landmarker.task) về và đặt cạnh script này."
-    )
+    raise FileNotFoundError(f"Không tìm thấy model MediaPipe: {HAND_LANDMARKER_MODEL_PATH}")
 
 BaseOptions = mp.tasks.BaseOptions
 HandLandmarker = vision.HandLandmarker

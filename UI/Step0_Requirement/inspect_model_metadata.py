@@ -11,28 +11,28 @@ if sys.platform == 'win32':
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
 
+# Gốc project: .../Nhom17_DoAnXuLyAnhSo_HCMUTE
+project_root = os.path.dirname(os.path.dirname(script_dir))
+
 # Chọn format model: 0 = h5, 1 = keras, 2 = saved_model
 MODEL_TYPE = 2
 
-# File metadata
-METADATA_FILE = "SavedModel/metadata.pkl"  # Hoặc "saved_model/metadata.pkl"
+# File metadata (đặt trong models/SavedModel/)
+METADATA_PATH = os.path.join(project_root, "models", "SavedModel", "metadata.pkl")
 
-# Xác định model path
+# Xác định model path (đặt trong models/SavedModel/)
 if MODEL_TYPE == 0:
-    MODEL_PATH = os.path.join(script_dir, "gesture_model.h5")
+    MODEL_PATH = os.path.join(project_root, "models", "gesture_model.h5")
 elif MODEL_TYPE == 1:
-    MODEL_PATH = os.path.join(script_dir, "best_model.keras")
+    MODEL_PATH = os.path.join(project_root, "models", "best_model.keras")
 elif MODEL_TYPE == 2:
-    MODEL_PATH = os.path.join(script_dir, "SavedModel/saved_model_best")
+    MODEL_PATH = os.path.join(project_root, "models", "SavedModel", "saved_model_best")
 else:
     raise ValueError(f"MODEL_TYPE phai la 0, 1 hoac 2, got {MODEL_TYPE}")
-
-METADATA_PATH = os.path.join(script_dir, METADATA_FILE)
 
 # METADATA
 print("=" * 80)
 print("METADATA.PKL")
-print("=" * 80)
 
 if not os.path.exists(METADATA_PATH):
     print(f"Khong tim thay: {METADATA_PATH}")
@@ -60,7 +60,6 @@ else:
 # MODEL
 print("=" * 80)
 print("MODEL")
-print("=" * 80)
 
 if not os.path.exists(MODEL_PATH):
     print(f"Khong tim thay: {MODEL_PATH}")
