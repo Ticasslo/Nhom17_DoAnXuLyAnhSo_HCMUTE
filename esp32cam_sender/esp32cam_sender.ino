@@ -21,9 +21,9 @@ const char *password = "910JQKA2";
 // Camera quality/FPS trade-off
 // HVGA (480x320) - cân bằng chất lượng và FPS
 #define FRAME_SIZE FRAMESIZE_HVGA // 480 x 320
-#define JPEG_QUALITY 35
+#define JPEG_QUALITY 38
 // jpeg_quality: số CÀNG LỚN -> chất lượng THẤP hơn -> ảnh NHỎ hơn -> FPS CAO & mượt hơn
-#define FB_COUNT 3 // Buffering (ESP32-S3 có 8MB PSRAM)
+#define FB_COUNT 2 // Buffering (ESP32-S3 có 8MB PSRAM)
 
 // Pinout ESP32-S3 N16R8 + OV2640 (ESP32-S3-EYE layout)
 #define PWDN_GPIO_NUM -1
@@ -66,9 +66,9 @@ static esp_err_t stream_handler(httpd_req_t *req)
 
   while (true)
   {
-    // Giới hạn FPS ~15 FPS (66ms/frame) để tránh quá tải khi chạy lâu
+    // Giới hạn FPS ~20 FPS (50ms/frame) để tránh quá tải khi chạy lâu
     uint32_t now = millis();
-    if (now - last < 66) // ~15 FPS (1000ms / 15 ≈ 66ms)
+    if (now - last < 50) // ~20 FPS (1000ms / 20 ≈ 50ms)
     {
       vTaskDelay(pdMS_TO_TICKS(2));
       continue;
@@ -273,7 +273,7 @@ void setup()
   config.pin_sccb_scl = SIOC_GPIO_NUM;
   config.pin_pwdn = PWDN_GPIO_NUM;
   config.pin_reset = RESET_GPIO_NUM;
-  config.xclk_freq_hz = 18000000; // 18 MHz
+  config.xclk_freq_hz = 16000000; // 16 MHz (giảm nhiệt camera)
   config.pixel_format = PIXFORMAT_JPEG;
   config.frame_size = FRAME_SIZE;
   config.jpeg_quality = JPEG_QUALITY;
@@ -298,7 +298,7 @@ void setup()
     s->set_vflip(s, 0);
     s->set_hmirror(s, 0);
     s->set_brightness(s, 0);
-    s->set_contrast(s, 0);
+    s->set_contrast(s, 1); // tăng contrast cho chuyển động
     s->set_saturation(s, 0);
     s->set_gainceiling(s, GAINCEILING_2X);
     s->set_whitebal(s, 1); // AWB on
@@ -309,12 +309,12 @@ void setup()
     s->set_aec_value(s, 300);
     s->set_gain_ctrl(s, 1);
     s->set_agc_gain(s, 0);
-    s->set_bpc(s, 0);     // tắt black pixel correction
-    s->set_wpc(s, 1);     // bật white pixel correction
-    s->set_raw_gma(s, 1); // gamma
-    s->set_lenc(s, 1);    // lens correction
-    s->set_denoise(s, 0); // tắt denoise để giảm tải
-    s->set_sharpness(s, 0);
+    s->set_bpc(s, 0);       // tắt black pixel correction (giảm nhiệt)
+    s->set_wpc(s, 0);       // tắt white pixel correction (giảm nhiệt)
+    s->set_raw_gma(s, 0);   // tắt gamma (giảm nhiệt)
+    s->set_lenc(s, 0);      // tắt lens correction (giảm nhiệt)
+    s->set_denoise(s, 0);   // tắt denoise để giảm tải
+    s->set_sharpness(s, 1); // tăng sharpness nhẹ cho chuyển động
     s->set_special_effect(s, 0);
     s->set_colorbar(s, 0); // tắt color bar
   }
@@ -324,7 +324,7 @@ void setup()
   // WiFi Power: Mặc định có thể là 19.5dBm, 20dBm, hoặc 20.5dBm tùy chuẩn (802.11b/g)
   // Arduino framework thường mặc định ~19.5-20dBm
   // WIFI_POWER_19_5dBm: ~80-100mA | WIFI_POWER_11dBm: ~50-70mA | WIFI_POWER_8_5dBm: ~40-60mA
-  WiFi.setTxPower(WIFI_POWER_11dBm); // Giảm công suất phát, phạm vi WiFi ngắn hơn một chút
+  WiFi.setTxPower(WIFI_POWER_15dBm);
   WiFi.begin(ssid, password);
   Serial.printf("Connecting to %s", ssid);
   while (WiFi.status() != WL_CONNECTED)

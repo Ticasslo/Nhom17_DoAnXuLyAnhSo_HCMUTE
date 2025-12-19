@@ -7,8 +7,10 @@ from queue import Queue, Empty, Full
 import numpy as np
 from PIL import Image, ImageTk
 import tkinter as tk
+from tkinter import scrolledtext
 import pickle
 from collections import deque, Counter
+import sys
 
 import mediapipe as mp
 from mediapipe.tasks.python import vision
@@ -924,20 +926,57 @@ try:
     info_panel.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 10))
     info_panel.pack_propagate(False)
     
-    # Title cho info panel
-    info_title = tk.Label(
-        info_panel,
-        text="Performance Metrics",
-        font=('Segoe UI', 12, 'bold'),
+    # ========== GROUP INFO SECTION ==========
+    group_info_frame = tk.Frame(info_panel, bg='#252525')
+    group_info_frame.pack(fill=tk.X, padx=15, pady=(15, 10))
+    
+    group_title = tk.Label(
+        group_info_frame,
+        text="Nhóm 17:",
+        font=('Segoe UI', 14, 'bold'),
         bg='#252525',
         fg='#ffffff',
         anchor='w'
     )
-    info_title.pack(fill=tk.X, padx=15, pady=(15, 10))
+    group_title.pack(anchor='w', pady=(0, 8))
+    
+    # Danh sách thành viên
+    members = [
+        "23110203 Phạm Trần Thiên Đăng",
+        "23110235 Phạm Võ Nhất Kha",
+        "23110280 Huỳnh Thanh Nhân",
+        "23110327 Huỳnh Ngọc Thắng"
+    ]
+    
+    for member in members:
+        member_label = tk.Label(
+            group_info_frame,
+            text=member,
+            font=('Segoe UI', 10, 'bold'),
+            bg='#252525',
+            fg='#ffffff',
+            anchor='w'
+        )
+        member_label.pack(anchor='w', pady=2)
+    
+    # Separator line
+    separator = tk.Frame(info_panel, bg='#3d3d3d', height=1)
+    separator.pack(fill=tk.X, padx=15, pady=10)
+    
+    # Title cho info panel
+    info_title = tk.Label(
+        info_panel,
+        text="Performance Metrics",
+        font=('Segoe UI', 11, 'bold'),
+        bg='#252525',
+        fg='#ffffff',
+        anchor='w'
+    )
+    info_title.pack(fill=tk.X, padx=15, pady=(0, 8))
     
     # Metrics container với vertical layout
     metrics_container = tk.Frame(info_panel, bg='#252525')
-    metrics_container.pack(fill=tk.BOTH, expand=True, padx=15, pady=(0, 15))
+    metrics_container.pack(fill=tk.X, padx=15, pady=(0, 10))
     
     # Metrics labels (sẽ được update trong update_frame)
     metrics_labels = {}
@@ -951,35 +990,150 @@ try:
         ('display_fps', 'Display FPS', '#00ff00'),
     ]
     
-    # Tạo vertical layout cho metrics
+    # Tạo vertical layout cho metrics (gọn hơn)
     for key, label, color in metric_configs:
         # Metric container
         metric_frame = tk.Frame(metrics_container, bg='#252525')
-        metric_frame.pack(fill=tk.X, pady=8)
+        metric_frame.pack(fill=tk.X, pady=3)
         
         # Label name
         name_label = tk.Label(
             metric_frame,
             text=f"{label}:",
-            font=('Segoe UI', 9),
+            font=('Segoe UI', 8),
             bg='#252525',
             fg='#aaaaaa',
             anchor='w'
         )
-        name_label.pack(anchor='w', padx=(0, 5))
+        name_label.pack(side=tk.LEFT, padx=(0, 5))
         
         # Value label
         value_label = tk.Label(
             metric_frame,
             text="--",
-            font=('Consolas', 11, 'bold'),
+            font=('Consolas', 9, 'bold'),
             bg='#252525',
             fg=color,
             anchor='w'
         )
-        value_label.pack(anchor='w')
+        value_label.pack(side=tk.LEFT)
         
         metrics_labels[key] = value_label
+    
+    # Separator line trước console
+    separator2 = tk.Frame(info_panel, bg='#3d3d3d', height=1)
+    separator2.pack(fill=tk.X, padx=15, pady=(10, 8))
+    
+    # ========== CONSOLE LOG SECTION ==========
+    console_title = tk.Label(
+        info_panel,
+        text="Console Log",
+        font=('Segoe UI', 11, 'bold'),
+        bg='#252525',
+        fg='#ffffff',
+        anchor='w'
+    )
+    console_title.pack(fill=tk.X, padx=15, pady=(0, 5))
+    
+    # Console text widget với scrollbar
+    console_frame = tk.Frame(info_panel, bg='#252525')
+    console_frame.pack(fill=tk.BOTH, expand=True, padx=15, pady=(0, 15))
+    
+    console_text = scrolledtext.ScrolledText(
+        console_frame,
+        height=8,
+        font=('Consolas', 9),
+        bg='#1e1e1e',
+        fg='#00ff00',
+        insertbackground='#00ff00',
+        wrap=tk.WORD,
+        relief=tk.FLAT,
+        borderwidth=0,
+        padx=5,
+        pady=5
+    )
+    console_text.pack(fill=tk.BOTH, expand=True)
+    console_text.config(state=tk.DISABLED)  # Chỉ cho phép append, không cho edit
+    
+    # Queue để buffer messages từ các threads (thread-safe)
+    console_queue = Queue()
+    
+    # Class để redirect stdout vào console widget (thread-safe)
+    class ConsoleRedirect:
+        def __init__(self, message_queue):
+            self.message_queue = message_queue
+            self.stdout = sys.stdout
+            self.buffer = ""  # Buffer để tích lũy message từ nhiều lần write()
+        
+        def write(self, message):
+            if not message:
+                return
+            
+            # Tích lũy message vào buffer
+            self.buffer += message
+            
+            # Nếu có newline trong buffer, tách ra và đưa vào queue
+            while '\n' in self.buffer:
+                line, self.buffer = self.buffer.split('\n', 1)
+                # Đưa từng dòng vào queue (mỗi dòng là một entry riêng)
+                self.message_queue.put(line)
+        
+        def flush(self):
+            # Khi flush (print() tự động gọi sau mỗi print()), đưa phần còn lại vào queue
+            if self.buffer:
+                cleaned = self.buffer.rstrip('\r\n')
+                if cleaned:  # Chỉ đưa nếu còn nội dung sau khi strip
+                    self.message_queue.put(cleaned)
+                self.buffer = ""
+    
+    # Redirect stdout vào console queue
+    console_redirect = ConsoleRedirect(console_queue)
+    sys.stdout = console_redirect
+    
+    # Function để process console queue từ main thread
+    def process_console_queue():
+        try:
+            # Kiểm tra widget vẫn tồn tại và root vẫn alive
+            if stop_flag.is_set() or not root.winfo_exists():
+                return
+            
+            while True:
+                try:
+                    message = console_queue.get_nowait()
+                    try:
+                        console_text.config(state=tk.NORMAL)
+                        # Insert message (đã được strip newline rồi)
+                        console_text.insert(tk.END, message)
+                        # LUÔN LUÔN thêm 2 dòng trống để tạo khoảng cách
+                        console_text.insert(tk.END, '\n\n')
+                        console_text.see(tk.END)  # Auto scroll xuống cuối
+                        # Giới hạn số dòng (giữ 500 dòng gần nhất)
+                        lines = int(console_text.index('end-1c').split('.')[0])
+                        if lines > 500:
+                            console_text.delete('1.0', f'{lines-500}.0')
+                        console_text.config(state=tk.DISABLED)
+                    except (tk.TclError, RuntimeError):
+                        # Widget đã bị destroy, restore stdout và dừng
+                        try:
+                            sys.stdout = sys.__stdout__
+                        except:
+                            pass
+                        return
+                except Empty:
+                    break
+        except Exception as e:
+            # Fallback: print ra stdout gốc nếu có lỗi
+            try:
+                sys.__stdout__.write(f"Console error: {e}\n")
+            except:
+                pass
+        
+        # Schedule lại để check queue tiếp
+        if not stop_flag.is_set() and root.winfo_exists():
+            root.after(50, process_console_queue)  # Check mỗi 50ms
+    
+    # Bắt đầu process console queue
+    root.after(100, process_console_queue)
     
     # ========== RIGHT SIDE: VIDEO DISPLAY ==========
     video_panel = tk.Frame(main_frame, bg='#1e1e1e')
@@ -1033,6 +1187,11 @@ try:
     
     # Handle window close
     def on_closing():
+        # Restore stdout trước khi print (tránh lỗi khi widget đã bị destroy)
+        try:
+            sys.stdout = sys.__stdout__
+        except:
+            pass
         print("\nStopped by user (closed window)")
         stop_flag.set()
         root.quit()
@@ -2128,6 +2287,12 @@ avg_inference_fps = sum(inference_fps_list) / len(inference_fps_list) if inferen
 avg_input_fps = sum(input_fps_list) / len(input_fps_list) if input_fps_list else 0
 
 total_end = time.time()
+
+# Restore stdout về gốc để print summary ra terminal (tránh lỗi khi widget đã bị destroy)
+try:
+    sys.stdout = sys.__stdout__
+except:
+    pass
 
 print(f"\n{'='*60}")
 print(f"REALTIME SUMMARY - MEDIAPIPE HAND LANDMARKER:")
