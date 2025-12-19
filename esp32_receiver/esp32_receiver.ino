@@ -248,6 +248,8 @@ void connectMQTT()
     if (mqtt_client.connect(mqtt_client_id))
     {
       Serial.println("✓ MQTT Connected!");
+      Serial.print("✓ Subscribed to topic: ");
+      Serial.println(mqtt_topic_gesture);
       mqtt_client.subscribe(mqtt_topic_gesture);
     }
     else
@@ -338,7 +340,7 @@ void parse_gesture_message(const char *json_string)
     {
       fan_speed_state = 1;
       buzzerActionBeep();
-      rampFanTo(60);
+      rampFanTo(30);
     }
   }
   else if (strstr(gesture, "FanSpeed2"))
@@ -347,7 +349,7 @@ void parse_gesture_message(const char *json_string)
     {
       fan_speed_state = 2;
       buzzerActionBeep();
-      rampFanTo(80);
+      rampFanTo(65);
     }
   }
   else if (strstr(gesture, "FanSpeed3"))
@@ -401,9 +403,18 @@ void parse_gesture_message(const char *json_string)
 
 void mqtt_callback(char *topic, byte *payload, unsigned int length)
 {
+  Serial.print("  [MQTT] Nhận được message từ topic: ");
+  Serial.println(topic);
+  Serial.print("  [MQTT] Độ dài payload: ");
+  Serial.println(length);
+
   char message[length + 1];
   memcpy(message, payload, length);
   message[length] = '\0';
+
+  Serial.print("  [MQTT] Payload: ");
+  Serial.println(message);
+
   parse_gesture_message(message);
 }
 
@@ -439,4 +450,3 @@ void loop()
   mqtt_client.loop();
   delay(10);
 }
-s

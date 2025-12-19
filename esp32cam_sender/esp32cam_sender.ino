@@ -23,7 +23,7 @@ const char *password = "910JQKA2";
 #define FRAME_SIZE FRAMESIZE_HVGA // 480 x 320
 #define JPEG_QUALITY 35
 // jpeg_quality: số CÀNG LỚN -> chất lượng THẤP hơn -> ảnh NHỎ hơn -> FPS CAO & mượt hơn
-#define FB_COUNT 2 // Buffering (ESP32-S3 có 8MB PSRAM)
+#define FB_COUNT 3 // Buffering (ESP32-S3 có 8MB PSRAM)
 
 // Pinout ESP32-S3 N16R8 + OV2640 (ESP32-S3-EYE layout)
 #define PWDN_GPIO_NUM -1

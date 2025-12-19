@@ -66,6 +66,44 @@ NUM_FEATURES = 46  # 42 landmarks (21 * 2) + 2 Y_hand + 2 X_hand = 46 features
 # VALIDATION: Kiểm tra handedness có khớp với label không
 # ===============================================================
 
+# ===============================================================
+# 1.5. HÀM TIỀN XỬ LÝ (ISP)
+# ===============================================================
+
+def tien_xu_ly(img):
+    # MỤC TIÊU CHÍNH: CÂN BẰNG DATASET - Giúp đồng nhất dữ liệu Landmarks giữa các ảnh chụp ở điều kiện khác nhau.
+    if img is None:
+        return None
+
+    # 0. Resize về 640x640: Đồng nhất không gian tọa độ để Landmarks không bị co giãn sai lệch.
+    img = cv2.resize(img, (640, 640))
+
+    # 1. Float: Chuyển sang số thực [0, 1] để xử lý chính xác các thay đổi nhỏ về cường độ sáng.
+    img = img.astype(np.float32) / 255.0
+
+    # 2. White balance (Cân bằng trắng): 
+    # Sửa lỗi ám màu, đưa màu da tay về chuẩn thực tế giúp AI nhận diện đúng đối tượng.
+    mean = img.mean(axis=(0, 1), keepdims=True)
+    gray = mean.mean()
+    scale = np.clip(gray / (mean + 1e-6), 0.9, 1.1)
+    img = np.clip(img * scale, 0, 1)
+    
+    # Bù sáng nhẹ toàn cục (10%) để hỗ trợ MediaPipe thấy rõ các nếp gấp khớp tay.
+    img = np.clip(img * 1.1, 0, 1)
+
+    # 3. Gamma thích nghi (Adaptive Gamma):
+    # Triệt tiêu sự khác biệt về độ tương phản giữa ảnh sáng và ảnh tối.
+    # Đảm bảo hình dạng bộ khung xương (Landmarks) luôn nhất quán bất kể môi trường chụp.
+    avg = img.mean()
+    gamma = np.clip(1.4 - avg, 0.9, 1.4)
+    img = np.power(img, 1/gamma)
+
+    # 4. Denoise (Gaussian Blur 3x3):
+    # Loại bỏ các hạt nhiễu kỹ thuật số, giúp các điểm Landmarks đứng yên một chỗ, không bị nhảy lung tung.
+    img = cv2.GaussianBlur(img, (3, 3), 0)
+    
+    return (img * 255).astype(np.uint8)
+
 def validate_handedness(gesture_folder, detected_handedness):
     # Chỉ validate cho asymmetric gestures
     if not (gesture_folder.startswith('A_LH_') or gesture_folder.startswith('A_RH_')):
@@ -105,7 +143,7 @@ def validate_handedness(gesture_folder, detected_handedness):
 def normalize_features(landmarks_array):
     """
     Normalize landmarks: relative + scale normalization + orientation features
-    PHẢI GIỐNG HỆT với hàm normalize_features() trong tkinter_template_detection_classification.py!
+    PHẢI GIỐNG HỆT với hàm normalize_features() trong classification
     
     Input: landmarks_array shape (21, 2) với (x, y) [đã normalized [0,1] từ MediaPipe]
     Output: NUM_FEATURES features [x0, y0, x1, y1, ..., x20, y20, y_hand_x, y_hand_y, x_hand_x, x_hand_y] đã normalize
@@ -348,6 +386,9 @@ for gesture_folder in gesture_folders:
             print(f"  [WARNING] {msg}")
             skipped_images += 1
             continue
+        
+        # Áp dụng tiền xử lý
+        img = tien_xu_ly(img)
         
         # Convert BGR → RGB (MediaPipe cần RGB)
         img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)

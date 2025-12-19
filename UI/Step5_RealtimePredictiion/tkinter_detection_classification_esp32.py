@@ -677,7 +677,7 @@ queue_drop_lock = threading.Lock()
 # System activation state variables
 system_active = False
 last_activity_time = time.time()
-SYSTEM_TIMEOUT_SECONDS = 10.0
+SYSTEM_TIMEOUT_SECONDS = 20.0
 
 def frame_grabber_thread():
     """
@@ -1580,7 +1580,7 @@ def update_frame():
         # KIỂM TRA TIMEOUT ĐỂ TẮT CHẾ ĐỘ NHẬN LỆNH
         if system_active and (time.time() - last_activity_time) > SYSTEM_TIMEOUT_SECONDS:
             system_active = False
-            print("SYSTEM DEACTIVATED due to 7s inactivity")
+            print(f"SYSTEM DEACTIVATED due to {SYSTEM_TIMEOUT_SECONDS}s inactivity")
 
         # Số bàn tay (dựa trên MediaPipe)
         num_objects = 0

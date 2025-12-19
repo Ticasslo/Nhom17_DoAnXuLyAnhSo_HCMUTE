@@ -9,8 +9,19 @@ from zeroconf import ServiceInfo, Zeroconf
 # ==========================================
 # 1. CẤU HÌNH HỆ THỐNG MQTT
 # ==========================================
-# Sử dụng localhost vì Python chạy cùng máy với Mosquitto Broker
-MQTT_BROKER_HOST = "localhost" 
+# Sử dụng IP LAN của máy tính để ESP32 có thể kết nối được
+# Tự động lấy IP LAN của máy tính (giống như ESP32 đang kết nối đến)
+def get_local_ip():
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except:
+        return "192.168.115.253"  # Fallback IP nếu không lấy được
+
+MQTT_BROKER_HOST = get_local_ip() 
 # Cổng mặc định của giao thức MQTT
 MQTT_BROKER_PORT = 1883
 # Thời gian giữ kết nối (giây)
@@ -164,9 +175,12 @@ class MQTTPublisher:
                 if result.rc == mqtt.MQTT_ERR_SUCCESS:
                     self.last_gesture = gesture_label
                     self.last_gesture_time = current_time
-                    print(f"MQTT -> Gửi lệnh: {gesture_label} ({confidence:.1f}%)")
+                    print(f"MQTT -> Gửi lệnh: {gesture_label} ({confidence:.1f}%) | Topic: {MQTT_TOPIC_GESTURE} | Broker: {self.broker_host}")
+                    print(f"MQTT -> Payload: {payload}")
                     return True
-                return False
+                else:
+                    print(f"MQTT -> Lỗi publish: rc={result.rc}")
+                    return False
         except Exception as e:
             print(f"MQTT: Lỗi khi phát tín hiệu: {e}")
             return False
