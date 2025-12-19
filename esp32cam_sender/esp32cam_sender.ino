@@ -21,7 +21,7 @@ const char *password = "910JQKA2";
 // Camera quality/FPS trade-off
 // HVGA (480x320) - cân bằng chất lượng và FPS
 #define FRAME_SIZE FRAMESIZE_HVGA // 480 x 320
-#define JPEG_QUALITY 38
+#define JPEG_QUALITY 25
 // jpeg_quality: số CÀNG LỚN -> chất lượng THẤP hơn -> ảnh NHỎ hơn -> FPS CAO & mượt hơn
 #define FB_COUNT 2 // Buffering (ESP32-S3 có 8MB PSRAM)
 
@@ -75,6 +75,7 @@ static esp_err_t stream_handler(httpd_req_t *req)
     }
     last = now;
 
+    // Lấy frame từ camera
     camera_fb_t *fb = esp_camera_fb_get();
     if (!fb)
     {
@@ -82,6 +83,7 @@ static esp_err_t stream_handler(httpd_req_t *req)
       break;
     }
 
+    // Gửi frame này
     res = httpd_resp_send_chunk(req, STREAM_BOUNDARY, strlen(STREAM_BOUNDARY));
     if (res == ESP_OK)
     {
@@ -273,7 +275,7 @@ void setup()
   config.pin_sccb_scl = SIOC_GPIO_NUM;
   config.pin_pwdn = PWDN_GPIO_NUM;
   config.pin_reset = RESET_GPIO_NUM;
-  config.xclk_freq_hz = 16000000; // 16 MHz (giảm nhiệt camera)
+  config.xclk_freq_hz = 16000000; // 16 MHz
   config.pixel_format = PIXFORMAT_JPEG;
   config.frame_size = FRAME_SIZE;
   config.jpeg_quality = JPEG_QUALITY;
@@ -297,26 +299,35 @@ void setup()
     s->set_framesize(s, FRAME_SIZE);
     s->set_vflip(s, 0);
     s->set_hmirror(s, 0);
-    s->set_brightness(s, 0);
-    s->set_contrast(s, 1); // tăng contrast cho chuyển động
-    s->set_saturation(s, 0);
+
+    // Image quality settings - Giữ mặc định để hình đẹp
+    s->set_brightness(s, 0); // Mặc định
+    s->set_contrast(s, 0);   // Mặc định
+    s->set_saturation(s, 0); // Mặc định
+    s->set_sharpness(s, 0);  // Mặc định
+
+    // Auto controls - BẬT để hình đẹp tự động
+    s->set_whitebal(s, 1);      // AWB BẬT (auto white balance)
+    s->set_awb_gain(s, 1);      // AWB gain BẬT
+    s->set_exposure_ctrl(s, 1); // Auto exposure BẬT
+    s->set_aec2(s, 1);          // AEC2 BẬT
+    s->set_ae_level(s, 0);      // AE level mặc định
+    // KHÔNG set aec_value (để auto)
+    s->set_gain_ctrl(s, 1); // Auto gain BẬT
+    // KHÔNG set agc_gain (để auto)
     s->set_gainceiling(s, GAINCEILING_2X);
-    s->set_whitebal(s, 1); // AWB on
-    s->set_awb_gain(s, 1);
-    s->set_exposure_ctrl(s, 1);
-    s->set_aec2(s, 1);
-    s->set_ae_level(s, 0);
-    s->set_aec_value(s, 300);
-    s->set_gain_ctrl(s, 1);
-    s->set_agc_gain(s, 0);
-    s->set_bpc(s, 0);       // tắt black pixel correction (giảm nhiệt)
-    s->set_wpc(s, 0);       // tắt white pixel correction (giảm nhiệt)
-    s->set_raw_gma(s, 0);   // tắt gamma (giảm nhiệt)
-    s->set_lenc(s, 0);      // tắt lens correction (giảm nhiệt)
-    s->set_denoise(s, 0);   // tắt denoise để giảm tải
-    s->set_sharpness(s, 1); // tăng sharpness nhẹ cho chuyển động
+
+    // Image processing - TẮT các tính năng không cần
+    s->set_bpc(s, 0);     // Tắt black pixel correction
+    s->set_wpc(s, 0);     // Tắt white pixel correction
+    s->set_lenc(s, 0);    // Tắt lens correction
+    s->set_denoise(s, 0); // Tắt denoise
+
+    // BẬT gamma để hình có màu đúng
+    s->set_raw_gma(s, 1); // Gamma BẬT (quan trọng cho màu sắc)
+
     s->set_special_effect(s, 0);
-    s->set_colorbar(s, 0); // tắt color bar
+    s->set_colorbar(s, 0);
   }
 
   WiFi.mode(WIFI_STA);

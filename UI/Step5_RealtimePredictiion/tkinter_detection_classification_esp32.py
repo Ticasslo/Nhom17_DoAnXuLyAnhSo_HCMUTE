@@ -634,8 +634,8 @@ print("=" * 60)
 print("CAMERA MODE - MediaPipe Hand Landmarker (keypoints + bbox)")
 print("  → ESP32 Camera Stream")
 
-# ESP32 stream: dùng default backend cho HTTP/RTSP streams (không dùng MSMF)
-temp_cap = cv2.VideoCapture(stream_url)
+# ESP32 stream: dùng FFMPEG backend cho MJPEG stream (tốt hơn default backend)
+temp_cap = cv2.VideoCapture(stream_url, cv2.CAP_FFMPEG)
 print(f"  → Kết nối ESP32 stream: {stream_url}")
 print("  → Đảm bảo ESP32 đã khởi động và stream đang chạy")
 
