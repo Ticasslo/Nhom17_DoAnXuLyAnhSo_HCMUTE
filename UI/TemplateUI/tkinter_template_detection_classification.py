@@ -127,8 +127,9 @@ DETECTION_SKIP_FRAMES = 1  # Số frame bỏ qua giữa các lần detection (0 
 
 # ---------- 2. Load Gesture Model & Metadata ----------
 script_dir = os.path.dirname(os.path.abspath(__file__))
-# Lấy project_root = thư mục Nhom17_DoAnXuLyAnhSo_HCMUTE
-project_root = os.path.dirname(script_dir)  # .../Nhom17_DoAnXuLyAnhSo_HCMUTE
+
+# project_root = .../Nhom17_DoAnXuLyAnhSo_HCMUTE
+project_root = os.path.dirname(os.path.dirname(script_dir))
 
 # Model paths (dùng chung với toàn project):
 #   Nhom17_DoAnXuLyAnhSo_HCMUTE/models/SavedModel/...
