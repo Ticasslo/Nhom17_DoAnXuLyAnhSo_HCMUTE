@@ -2,6 +2,11 @@
 
 Thắng, Đăng, Nhân, Kha xin chào.
 
+# Models
+https://drive.google.com/drive/folders/13sTNsJhthwzoIVg4f3iuINucdpt93TFq?usp=sharing
+# Kích hoạt thư viện venv:
+& D:\Nhom17_DoAnXuLyAnhSo_HCMUTE\.venv\Scripts\Activate.ps1
+
 ## 1. Mục tiêu hệ thống
 
 Hệ thống quạt thông minh điều khiển bằng cử chỉ tay, gồm 3 phần chính:
