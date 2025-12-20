@@ -11,6 +11,10 @@ const int mqtt_port = 1883;
 const char *mqtt_client_id = "esp32_receiver";
 const char *mqtt_topic_gesture = "gesture/command";
 
+// MQTT Broker Fallback IP (dùng nếu mDNS không tìm thấy broker)
+// Để trống "" để chỉ dùng mDNS, hoặc nhập IP trực tiếp ví dụ: "192.168.115.253"
+const char *mqtt_broker_fallback_ip = "192.168.115.253";
+
 // PIN DEFINITIONS
 #define LED_IN1 14
 #define LED_IN2 27
@@ -235,9 +239,20 @@ void connectMQTT()
     }
     else
     {
-      Serial.println("mDNS: Không tìm thấy Broker nào trong mạng. Đang thử lại...");
-      delay(2000);
-      return; // Thoát ra để loop() gọi lại connectMQTT và quét lại
+      // Fallback: dùng IP được cấu hình nếu mDNS không tìm thấy
+      if (strlen(mqtt_broker_fallback_ip) > 0)
+      {
+        discovered_mqtt_broker = String(mqtt_broker_fallback_ip);
+        Serial.print("mDNS: Không tìm thấy Broker. Dùng Fallback IP: ");
+        Serial.println(discovered_mqtt_broker);
+        mqtt_client.setServer(discovered_mqtt_broker.c_str(), mqtt_port);
+      }
+      else
+      {
+        Serial.println("mDNS: Không tìm thấy Broker nào trong mạng.");
+        delay(2000);
+        return; // Thoát ra để loop() gọi lại connectMQTT và quét lại
+      }
     }
   }
 
