@@ -21,9 +21,9 @@ const char *password = "910JQKA2";
 // Camera quality/FPS trade-off
 // HVGA (480x320) - cân bằng chất lượng và FPS
 #define FRAME_SIZE FRAMESIZE_HVGA // 480 x 320
-#define JPEG_QUALITY 25
+#define JPEG_QUALITY 32
 // jpeg_quality: số CÀNG LỚN -> chất lượng THẤP hơn -> ảnh NHỎ hơn -> FPS CAO & mượt hơn
-#define FB_COUNT 2 // Buffering (ESP32-S3 có 8MB PSRAM)
+#define FB_COUNT 3 // Buffering (ESP32-S3 có 8MB PSRAM)
 
 // Pinout ESP32-S3 N16R8 + OV2640 (ESP32-S3-EYE layout)
 #define PWDN_GPIO_NUM -1
@@ -70,7 +70,7 @@ static esp_err_t stream_handler(httpd_req_t *req)
     uint32_t now = millis();
     if (now - last < 50) // ~20 FPS (1000ms / 20 ≈ 50ms)
     {
-      vTaskDelay(pdMS_TO_TICKS(2));
+      vTaskDelay(pdMS_TO_TICKS(1));
       continue;
     }
     last = now;
@@ -93,9 +93,9 @@ static esp_err_t stream_handler(httpd_req_t *req)
     }
     if (res == ESP_OK)
     {
-      // Gửi theo chunks 8KB để giảm overhead
+      // Gửi theo chunks 16KB để giảm overhead và tăng throughput
       size_t sent = 0;
-      const size_t chunk_size = 8192; // 8KB chunks
+      const size_t chunk_size = 16384; // 16KB chunks
       while (sent < fb->len && res == ESP_OK)
       {
         size_t to_send = (fb->len - sent > chunk_size) ? chunk_size : (fb->len - sent);
@@ -110,7 +110,7 @@ static esp_err_t stream_handler(httpd_req_t *req)
     // Giúp WiFi task và các task khác có cơ hội chạy
     if (res == ESP_OK)
     {
-      vTaskDelay(pdMS_TO_TICKS(1)); // 1ms delay
+      vTaskDelay(pdMS_TO_TICKS(0));
     }
 
 #ifdef DEBUG_MODE
@@ -143,6 +143,8 @@ void startCameraServer()
   config.max_open_sockets = 1;    // Client (hiện tại tối ưu cho 1 client)
   config.lru_purge_enable = true; // dọn client cũ
   config.backlog_conn = 5;        // hàng đợi kết nối
+  config.send_wait_timeout = 5;   // Giảm timeout để tăng responsiveness (mặc định là 5, giữ nguyên)
+  config.recv_wait_timeout = 5;   // Giảm timeout để tăng responsiveness
 
   httpd_uri_t stream_uri = {
       .uri = "/stream",
