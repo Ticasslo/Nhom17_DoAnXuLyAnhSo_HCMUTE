@@ -3,8 +3,11 @@
 Thắng, Đăng, Nhân, Kha xin chào.
 
 # Models
+
 https://drive.google.com/drive/folders/13sTNsJhthwzoIVg4f3iuINucdpt93TFq?usp=sharing
+
 # Kích hoạt thư viện venv:
+
 & D:\Nhom17_DoAnXuLyAnhSo_HCMUTE\.venv\Scripts\Activate.ps1
 
 ## 1. Mục tiêu hệ thống
@@ -56,10 +59,11 @@ Nhom17_DoAnXuLyAnhSo_HCMUTE/
 - Kết nối WiFi STA với SSID `ilovehcmute`.
 - Khởi tạo camera OV2640 với cấu hình:
   - `FRAME_SIZE = HVGA (480x320)` – cân bằng chất lượng & FPS.
-  - `JPEG_QUALITY = 35`, `FB_COUNT = 3` – tối ưu RAM & tốc độ.
+  - `JPEG_QUALITY = 32`, `FB_COUNT = 3` – tối ưu RAM & tốc độ.
+  - `XCLK = 20MHz`, `CPU = 160MHz`, `WiFi TX Power = 15dBm` – tối ưu hiệu năng và giảm nhiệt.
 - Chạy HTTP server với 1 endpoint:
   - `GET /stream`: trả về **MJPEG multipart** (chuỗi các frame JPEG).
-  - Giới hạn ~15 FPS để tránh nóng/treo khi chạy lâu.
+  - Giới hạn ~20 FPS (50ms/frame) để tránh nóng/treo khi chạy lâu.
 - Bật **mDNS** với hostname `esp32-cam`:
   - Người dùng có thể truy cập `http://esp32-cam.local/stream` từ Python UI / trình duyệt.
 - Có FreeRTOS task `wifiTask` quản lý reconnect WiFi (ổn định khi chạy nhiều giờ).
@@ -81,6 +85,10 @@ Nhom17_DoAnXuLyAnhSo_HCMUTE/
 - Nhận video từ `SOURCE = "http://esp32-cam.local/stream"`.
 - Dùng **MediaPipe Hand Landmarker** để lấy 21 keypoints mỗi tay.
 - Chuẩn hóa landmarks (relative + scale + orientation `Y_hand`, `X_hand`) giống **y hệt** bên script trích data.
+- Trích xuất **46 features** từ landmarks:
+  - 42 features từ 21 landmarks (x, y cho mỗi landmark)
+  - 2 features từ `Y_hand` vector (từ WRIST đến trung bình 4 MCP joints)
+  - 2 features từ `X_hand` vector (từ INDEX_MCP đến PINKY_MCP)
 - Dùng model TensorFlow SavedModel để **phân loại cử chỉ** (Fan/Light/Start/...).
 - Cơ chế chống nhiễu:
   - Ngưỡng `GESTURE_REJECT_THRESHOLD`, **entropy**, **orientation magnitude** filter.
@@ -116,7 +124,8 @@ Nhom17_DoAnXuLyAnhSo_HCMUTE/
 ### 3.4 ESP32 Receiver (`esp32_receiver/esp32_receiver.ino`)
 
 - Tự connect WiFi + dùng **mDNS** (`MDNS.queryService("mqtt","tcp")`) để tìm broker.
-- Subcribe topic `gesture/command`.
+- **Fallback IP**: Nếu mDNS không tìm thấy broker, tự động dùng IP fallback được cấu hình trong code (`mqtt_broker_fallback_ip`).
+- Subscribe topic `gesture/command`.
 - Parse JSON `{ "gesture": "...", "confidence": ..., ... }` và điều khiển:
   - **LED 1/2**: `Light1On/Off`, `Light2On/Off`.
   - **Quạt DC** (qua L298N):
@@ -233,9 +242,10 @@ mosquitto_sub -h localhost -t "test" -v
 
    - Mở `esp32_receiver/esp32_receiver.ino`.
    - Chỉnh lại SSID/password nếu cần.
+   - **Cấu hình Fallback IP** (tùy chọn): Nếu mDNS không hoạt động, chỉnh `mqtt_broker_fallback_ip` thành IP LAN của máy tính chạy Mosquitto.
    - Nạp code, mở Serial Monitor kiểm tra:
      - WiFi connected
-     - `mDNS: Đã tìm thấy Broker` (sau khi broker chạy)
+     - `mDNS: Đã tìm thấy Broker` hoặc `mDNS: Không tìm thấy Broker. Dùng Fallback IP: ...` (sau khi broker chạy)
 
 3. **Chạy Mosquitto Broker trên PC**
 
@@ -270,3 +280,8 @@ mosquitto_sub -h localhost -t "test" -v
 - **Đào tạo model**:
   - Dataset được tiền xử lý (ISP) + augmentation cho symmetric gestures.
   - Đảm bảo **normalize features giống hệt** giữa training và realtime.
+  - Model sử dụng **46 features** (42 landmarks + 2 Y_hand + 2 X_hand).
+- **mDNS trên Windows**:
+  - ESP32-CAM: Có thể cần cài **Bonjour Print Services** để `esp32-cam.local` hoạt động.
+  - ESP32 Receiver: Có fallback IP nếu mDNS không tìm thấy broker.
+  - Python UI: Tự động lấy IP LAN làm MQTT broker host, không phụ thuộc mDNS.
