@@ -17,8 +17,7 @@ from mediapipe.tasks.python import vision
 # Giảm warning log
 warnings.filterwarnings("ignore", category=UserWarning)
 
-# ========== 1. CONFIGURATION ==========
-# Camera settings
+# 1. CONFIGURATION
 SOURCE = 0  # 0 = webcam mặc định
 
 # Performance settings
@@ -46,9 +45,8 @@ FRAME_BUFFER_SIZE = 1
 DETECTION_BUFFER_SIZE = 1
 
 DETECTION_SKIP_FRAMES = 1  # Số frame bỏ qua giữa các lần detection (0 = detect mọi frame)
-# =======================================
 
-# ---------- 2. MediaPipe Hand Landmarker ----------
+# 2. MediaPipe Hand Landmarker
 script_dir = os.path.dirname(os.path.abspath(__file__))
 
 # Gốc project: .../Nhom17_DoAnXuLyAnhSo_HCMUTE
@@ -64,14 +62,6 @@ BaseOptions = mp.tasks.BaseOptions
 HandLandmarker = vision.HandLandmarker
 HandLandmarkerOptions = vision.HandLandmarkerOptions
 VisionRunningMode = mp.tasks.vision.RunningMode
-
-# Tối ưu hiệu suất cho Windows:
-# - Lưu ý: MediaPipe Python trên Windows KHÔNG hỗ trợ GPU delegate
-# - Các tối ưu đã áp dụng:
-#   1. Warm-up model (giảm latency spike)
-#   2. Tối ưu số lượng hands detect (giảm num_hands nếu không cần nhiều)
-#   3. Multi-threading
-#   4. Tối ưu confidence thresholds
 base_options = BaseOptions(model_asset_path=HAND_LANDMARKER_MODEL_PATH)
 
 # MediaPipe sử dụng 2-stage pipeline: BlazePalm (palm detector) + Hand landmark model
@@ -98,50 +88,27 @@ try:
 except Exception as e:
     print(f"  → Warm-up failed (non-critical): {e}")
 
-# ---------- EMA Smoothing State ----------
+# EMA Smoothing State
 # EMA (Exponential Moving Average) state for each hand
 # Structure: {hand_idx: {'landmarks': array, 'last_seen': timestamp}}
 ema_state = {}
 
 def apply_ema_smoothing(hand_idx, current_landmarks, alpha=EMA_ALPHA):
-    """
-    Apply Exponential Moving Average smoothing to landmarks
-    
-    EMA formula: smoothed_t = alpha * current + (1 - alpha) * smoothed_t-1
-    
-    Benefits:
-    - Memory efficient: Only stores 1 previous value (vs N frames for moving average)
-    - Computation efficient: Only 1 multiplication + 1 addition per keypoint
-    - Adaptive: Automatically adjusts to motion speed
-    - Lower latency: ~16-20ms lag vs ~33-50ms for moving average
-    
-    Args:
-        hand_idx: Hand index (for tracking across frames)
-        current_landmarks: Current frame landmarks (21, 3) numpy array
-        alpha: Smoothing factor (0.0=max smooth, 1.0=no smooth)
-               Recommended: 0.1 (very smooth), 0.3 (balanced), 0.5 (responsive)
-    
-    Returns:
-        smoothed_landmarks: EMA-smoothed landmarks (21, 3) numpy array
-    """
     if not ENABLE_EMA_SMOOTHING:
         return current_landmarks
     
     current_time = time.time()
     
     if hand_idx not in ema_state:
-        # First time seeing this hand → initialize with current landmarks
         ema_state[hand_idx] = {
             'landmarks': current_landmarks.copy(),
             'last_seen': current_time
         }
         return current_landmarks
     
-    # Apply EMA: smoothed = alpha * current + (1-alpha) * previous_smoothed
     prev_landmarks = ema_state[hand_idx]['landmarks']
     smoothed = alpha * current_landmarks + (1 - alpha) * prev_landmarks
     
-    # Update state for next frame
     ema_state[hand_idx] = {
         'landmarks': smoothed,
         'last_seen': current_time
@@ -150,14 +117,6 @@ def apply_ema_smoothing(hand_idx, current_landmarks, alpha=EMA_ALPHA):
     return smoothed
 
 def cleanup_old_ema_state(current_hand_indices, max_age_seconds=5):
-    """
-    Remove EMA state for hands that haven't been seen recently
-    Call this periodically to avoid memory leak
-    
-    Args:
-        current_hand_indices: Set of hand indices detected in current frame
-        max_age_seconds: Remove hands not seen for this many seconds
-    """
     global ema_state
     current_time = time.time()
     
@@ -167,7 +126,7 @@ def cleanup_old_ema_state(current_hand_indices, max_age_seconds=5):
         if idx in current_hand_indices or (current_time - state['last_seen']) < max_age_seconds
     }
 
-# ---------- 3. Queue & threading setup ----------
+# 3. Queue & threading setup
 stream_url = SOURCE
 target_fps = 30.0
 
@@ -214,12 +173,6 @@ queue_drop_count = 0
 queue_drop_lock = threading.Lock()
 
 def frame_grabber_thread():
-    """
-    Thread 1: Đọc frame từ camera và đưa vào queue.
-    
-    Tối ưu: Dùng MSMF backend trên Windows (nhanh hơn DirectShow).
-    Fallback về default nếu không support.
-    """
     global queue_drop_count
     try:
         cap = cv2.VideoCapture(stream_url, cv2.CAP_MSMF)  # Windows: MSMF backend
@@ -227,7 +180,7 @@ def frame_grabber_thread():
         cap = cv2.VideoCapture(stream_url)  # Fallback
     
     if not cap.isOpened():
-        print("✗ Error: Cannot open video source")
+        print(" Error: Cannot open video source")
         stop_flag.set()
         return
     
@@ -239,7 +192,7 @@ def frame_grabber_thread():
     while not stop_flag.is_set():
         ret, frame = cap.read()
         if not ret:
-            print("✗ End of stream or error reading frame")
+            print(" End of stream or error reading frame")
             break
         
         frame_id += 1
@@ -267,13 +220,6 @@ def frame_grabber_thread():
 
 
 def hand_landmarker_thread():
-    """
-    Thread 2: Lấy frame từ queue, chạy MediaPipe Hand Landmarker (VIDEO mode)
-    và đẩy kết quả (keypoints + handedness) sang detection_queue.
-    
-    MediaPipe yêu cầu RGB format và Image wrapper.
-    Tối ưu: Set flags.writeable = False để tăng tốc (MediaPipe không modify image).
-    """
     global queue_drop_count, is_paused
     
     print("  → HandLandmarker thread: MediaPipe Hand Landmarker (VIDEO mode)")
@@ -315,7 +261,7 @@ def hand_landmarker_thread():
                     with queue_drop_lock:
                         queue_drop_count += 1
             except Exception as e:
-                print(f"✗ Error in HandLandmarker thread processing: {e}")
+                print(f"Error in HandLandmarker thread processing: {e}")
             finally:
                 # Đảm bảo task_done() chỉ được gọi 1 lần cho mỗi frame
                 frame_queue.task_done()
@@ -325,7 +271,7 @@ def hand_landmarker_thread():
                 break
             continue
         except Exception as e:
-            print(f"✗ Error in HandLandmarker thread (queue get): {e}")
+            print(f"Error in HandLandmarker thread (queue get): {e}")
             continue
     
     print("Thread 2 (HandLandmarker) stopped")
@@ -343,7 +289,7 @@ thread2.start()
 
 pred_start = time.time()
 
-# ---------- 4. Hiển thị real-time ----------
+# 4. Hiển thị real-time
 total_objects = 0
 frame_count = 0
 MAX_FPS_HISTORY = 300
@@ -388,16 +334,6 @@ auto_capture_enabled = False
 auto_capture_job = None
 
 def scan_missing_image_numbers(save_dir):
-    """
-    Quét thư mục để tìm các số còn thiếu trong khoảng từ 0 đến số lượng file hiện có
-    Ưu tiên lấp vào các số còn thiếu trước khi tiếp tục lưu các số tiếp theo
-    
-    Args:
-        save_dir: Đường dẫn thư mục lưu ảnh
-    
-    Returns:
-        tuple: (missing_numbers: list các số còn thiếu đã sắp xếp, next_counter: số tiếp theo để lưu)
-    """
     if not os.path.exists(save_dir):
         return [], 0
     
@@ -436,7 +372,7 @@ def scan_missing_image_numbers(save_dir):
         
         return missing_numbers, next_counter
     except Exception as e:
-        print(f"⚠ Lỗi khi quét thư mục lưu ảnh: {e}")
+        print(f" Lỗi khi quét thư mục lưu ảnh: {e}")
         return [], 0
 
 # Khởi tạo: quét thư mục và lưu các số còn thiếu
@@ -446,32 +382,26 @@ save_image_counter = 0  # Số tiếp theo để lưu (sau khi đã lấp hết 
 # Quét thư mục khi khởi động
 missing_image_numbers, save_image_counter = scan_missing_image_numbers(SAVE_DIR)
 if missing_image_numbers:
-    print(f"✓ Đã tìm thấy {len(missing_image_numbers)} số còn thiếu: {missing_image_numbers}")
-    print(f"  Sẽ ưu tiên lấp vào các số này trước khi tiếp tục từ số {save_image_counter}")
+    print(f"Đã tìm thấy {len(missing_image_numbers)} số còn thiếu: {missing_image_numbers}")
+    print(f"Sẽ ưu tiên lấp vào các số này trước khi tiếp tục từ số {save_image_counter}")
 elif save_image_counter > 0:
-    print(f"✓ Đã tìm thấy {save_image_counter} ảnh trong thư mục. Bắt đầu từ số {save_image_counter}")
+    print(f"Đã tìm thấy {save_image_counter} ảnh trong thư mục. Bắt đầu từ số {save_image_counter}")
 
 def capture_random_image(silent=False):
-    """
-    Chụp một ảnh ngẫu nhiên 640x640 từ frame hiện tại
-    
-    Args:
-        silent: Nếu True, không in debug messages (dùng cho chụp liên tục)
-    """
     global save_image_counter, last_save_time, notification_label, notification_timer, root
     global missing_image_numbers, current_frame, current_frame_lock, SAVE_HAND_IMAGES
     
     if not silent:
-        print("🔍 Bắt đầu chụp ảnh ngẫu nhiên...")
+        print("Bắt đầu chụp ảnh ngẫu nhiên...")
     
     # Cảnh báo nếu auto-save chưa bật nhưng vẫn cho phép chụp
     if not SAVE_HAND_IMAGES and not silent:
-        print("⚠ Auto-save chưa bật, nhưng vẫn cho phép chụp ảnh ngẫu nhiên")
+        print("Auto-save chưa bật, nhưng vẫn cho phép chụp ảnh ngẫu nhiên")
     
     # Kiểm tra khoảng thời gian giữa các lần lưu
     current_time = time.time()
     if current_time - last_save_time < SAVE_INTERVAL:
-        print(f"⚠ Vui lòng đợi {SAVE_INTERVAL:.1f}s giữa các lần chụp")
+        print(f"Vui lòng đợi {SAVE_INTERVAL:.1f}s giữa các lần chụp")
         return
     
     # Lấy frame hiện tại (thread-safe)
@@ -480,24 +410,24 @@ def capture_random_image(silent=False):
         if current_frame is not None:
             try:
                 frame = current_frame.copy()
-                print(f"✓ Đã lấy frame: {frame.shape if frame is not None else 'None'}")
+                print(f"Đã lấy frame: {frame.shape if frame is not None else 'None'}")
             except Exception as e:
-                print(f"✗ Lỗi khi copy frame: {e}")
+                print(f"Lỗi khi copy frame: {e}")
         else:
-            print("⚠ current_frame là None - chưa có frame nào được lưu")
+            print("current_frame là None - chưa có frame nào được lưu")
     
     if frame is None:
-        print("⚠ Chưa có frame để chụp - vui lòng đợi camera khởi động")
+        print("Chưa có frame để chụp - vui lòng đợi camera khởi động")
         if notification_label:
-            notification_label.config(text="⚠ Chưa có frame!", fg='#ffa500')
+            notification_label.config(text=" Chưa có frame!", fg='#ffa500')
             if notification_timer:
                 root.after_cancel(notification_timer)
             def restore_status():
                 if notification_label:
                     if SAVE_HAND_IMAGES:
-                        notification_label.config(text="✓ Auto-save: ON", fg='#00ff00')
+                        notification_label.config(text=" Auto-save: ON", fg='#00ff00')
                     else:
-                        notification_label.config(text="✗ Auto-save: OFF", fg='#ff6b6b')
+                        notification_label.config(text=" Auto-save: OFF", fg='#ff6b6b')
             notification_timer = root.after(2000, restore_status)
         return
     
@@ -512,7 +442,7 @@ def capture_random_image(silent=False):
         # Xử lý frame: resize hoặc cắt ngẫu nhiên tùy kích thước
         if frame_w < target_size or frame_h < target_size:
             # Frame nhỏ hơn 640x640: resize toàn bộ frame lên 640x640 (giữ tỷ lệ và pad với màu đen)
-            print(f"✓ Frame nhỏ ({frame_w}x{frame_h}), tự động resize lên {target_size}x{target_size}")
+            print(f"Frame nhỏ ({frame_w}x{frame_h}), tự động resize lên {target_size}x{target_size}")
             is_resized = True
             
             # Tính scale để fit vào 640x640 (giữ tỷ lệ)
@@ -553,7 +483,7 @@ def capture_random_image(silent=False):
             random_crop = frame[random_y:random_y+target_size, random_x:random_x+target_size]
         
         if random_crop.size == 0:
-            print("⚠ Không thể xử lý ảnh")
+            print("Không thể xử lý ảnh")
             return
         
         # Tìm số counter để lưu: ưu tiên dùng số còn thiếu trước
@@ -581,7 +511,7 @@ def capture_random_image(silent=False):
                 attempts += 1
             
             if attempts >= max_attempts:
-                print(f"✗ Không thể tìm được tên file trống sau {max_attempts} lần thử")
+                print(f" Không thể tìm được tên file trống sau {max_attempts} lần thử")
                 return
         
         # Tạo tên file và đường dẫn
@@ -590,7 +520,7 @@ def capture_random_image(silent=False):
         
         # Kiểm tra lại một lần nữa để đảm bảo an toàn
         if os.path.exists(filepath):
-            print(f"⚠ File {filename} đã tồn tại, bỏ qua lần lưu này")
+            print(f"File {filename} đã tồn tại, bỏ qua lần lưu này")
             return
         
         # Lưu ảnh
@@ -601,7 +531,7 @@ def capture_random_image(silent=False):
         
         # Hiển thị thông báo
         if notification_label:
-            notification_label.config(text=f"✓ Đã chụp: {filename}", fg='#00ff00')
+            notification_label.config(text=f" Đã chụp: {filename}", fg='#00ff00')
         
         # Hủy timer cũ nếu có
         if notification_timer:
@@ -611,47 +541,45 @@ def capture_random_image(silent=False):
         def restore_auto_save_status():
             if notification_label:
                 if SAVE_HAND_IMAGES:
-                    notification_label.config(text="✓ Auto-save: ON", fg='#00ff00')
+                    notification_label.config(text=" Auto-save: ON", fg='#00ff00')
                 else:
-                    notification_label.config(text="✗ Auto-save: OFF", fg='#ff6b6b')
+                    notification_label.config(text=" Auto-save: OFF", fg='#ff6b6b')
         notification_timer = root.after(2000, restore_auto_save_status)
         
         if is_resized:
-            print(f"✓ Đã chụp và resize ảnh: {filepath} (từ {frame_w}x{frame_h} lên {target_size}x{target_size})")
+            print(f"Đã chụp và resize ảnh: {filepath} (từ {frame_w}x{frame_h} lên {target_size}x{target_size})")
         else:
-            print(f"✓ Đã chụp ảnh ngẫu nhiên: {filepath} (vị trí: x={random_x}, y={random_y})")
+            print(f"Đã chụp ảnh ngẫu nhiên: {filepath} (vị trí: x={random_x}, y={random_y})")
         
     except Exception as e:
-        print(f"✗ Lỗi khi chụp ảnh ngẫu nhiên: {e}")
+        print(f"Lỗi khi chụp ảnh ngẫu nhiên: {e}")
 
-# ---------- Continuous Random Capture ----------
+# Continuous Random Capture
 def start_continuous_capture():
-    """Bật chế độ chụp ngẫu nhiên liên tục."""
     global auto_capture_enabled, auto_capture_job, notification_label, notification_timer, root
     if auto_capture_enabled:
-        print("⚠ Đã bật chụp liên tục rồi")
+        print("Đã bật chụp liên tục rồi")
         return
     auto_capture_enabled = True
-    print(f"✓ Bật chụp ngẫu nhiên liên tục (mỗi {SAVE_INTERVAL}s)")
+    print(f"Bật chụp ngẫu nhiên liên tục (mỗi {SAVE_INTERVAL}s)")
     
     # Hiển thị thông báo trong UI
     if notification_label:
-        notification_label.config(text=f"✓ Chụp liên tục: ON ({SAVE_INTERVAL}s)", fg='#00ff00')
+        notification_label.config(text=f"Chụp liên tục: ON ({SAVE_INTERVAL}s)", fg='#00ff00')
         if notification_timer:
             root.after_cancel(notification_timer)
         def restore_status():
             if notification_label:
                 if SAVE_HAND_IMAGES:
-                    notification_label.config(text="✓ Auto-save: ON", fg='#00ff00')
+                    notification_label.config(text="Auto-save: ON", fg='#00ff00')
                 else:
-                    notification_label.config(text="✗ Auto-save: OFF", fg='#ff6b6b')
+                    notification_label.config(text="Auto-save: OFF", fg='#ff6b6b')
         notification_timer = root.after(3000, restore_status)
     
     _schedule_next_capture()
 
 
 def stop_continuous_capture():
-    """Tắt chế độ chụp ngẫu nhiên liên tục."""
     global auto_capture_enabled, auto_capture_job, notification_label, notification_timer, root
     auto_capture_enabled = False
     if auto_capture_job and root:
@@ -660,24 +588,23 @@ def stop_continuous_capture():
         except Exception:
             pass
     auto_capture_job = None
-    print("✓ Tắt chụp ngẫu nhiên liên tục")
+    print("Tắt chụp ngẫu nhiên liên tục")
     
     # Hiển thị thông báo trong UI
     if notification_label:
-        notification_label.config(text="✗ Chụp liên tục: OFF", fg='#ff6b6b')
+        notification_label.config(text="Chụp liên tục: OFF", fg='#ff6b6b')
         if notification_timer:
             root.after_cancel(notification_timer)
         def restore_status():
             if notification_label:
                 if SAVE_HAND_IMAGES:
-                    notification_label.config(text="✓ Auto-save: ON", fg='#00ff00')
+                    notification_label.config(text="Auto-save: ON", fg='#00ff00')
                 else:
-                    notification_label.config(text="✗ Auto-save: OFF", fg='#ff6b6b')
+                    notification_label.config(text=" Auto-save: OFF", fg='#ff6b6b')
         notification_timer = root.after(2000, restore_status)
 
 
 def _schedule_next_capture():
-    """Lên lịch chụp tiếp theo nếu chế độ liên tục đang bật."""
     global auto_capture_job
     if not auto_capture_enabled or stop_flag.is_set() or root is None:
         return
@@ -685,20 +612,19 @@ def _schedule_next_capture():
         # Chụp ảnh với silent=True để tránh spam console
         capture_random_image(silent=True)
     except Exception as e:
-        print(f"✗ Lỗi khi chụp liên tục: {e}")
+        print(f"Lỗi khi chụp liên tục: {e}")
     # Lặp lại sau SAVE_INTERVAL (ms)
     delay_ms = max(int(SAVE_INTERVAL * 1000), 10)
     auto_capture_job = root.after(delay_ms, _schedule_next_capture)
 
 
 def toggle_continuous_capture():
-    """Toggle chụp ngẫu nhiên liên tục."""
     if auto_capture_enabled:
         stop_continuous_capture()
     else:
         start_continuous_capture()
 
-# ---------- Tkinter UI Setup ----------
+# Tkinter UI Setup
 try:
     root = tk.Tk()
     root.title("MediaPipe Hand Landmarker - Real-time Detection")
@@ -719,7 +645,7 @@ try:
     y = (screen_height - root.winfo_height()) // 2 - 35
     root.geometry(f"+{x}+{y}")
     
-    # ========== HEADER ==========
+    #  HEADER 
     header_frame = tk.Frame(root, bg='#2d2d2d', height=50)
     header_frame.pack(fill=tk.X, padx=0, pady=0)
     header_frame.pack_propagate(False)
@@ -754,20 +680,20 @@ try:
     
     # Hiển thị trạng thái auto-save ban đầu khi khởi động
     if SAVE_HAND_IMAGES:
-        notification_label.config(text="✓ Auto-save: ON", fg='#00ff00')
+        notification_label.config(text=" Auto-save: ON", fg='#00ff00')
     else:
-        notification_label.config(text="✗ Auto-save: OFF", fg='#ff6b6b')
+        notification_label.config(text=" Auto-save: OFF", fg='#ff6b6b')
     
-    # ========== MAIN CONTENT AREA ==========
+    #  MAIN CONTENT AREA 
     main_frame = tk.Frame(root, bg='#1e1e1e')
     main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
     
-    # ========== LEFT SIDE: INFO PANEL ==========
+    #  LEFT SIDE: INFO PANEL 
     info_panel = tk.Frame(main_frame, bg='#252525', width=INFO_PANEL_WIDTH)
     info_panel.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 10))
     info_panel.pack_propagate(False)
     
-    # ========== GROUP INFO SECTION ==========
+    #  GROUP INFO SECTION 
     group_info_frame = tk.Frame(info_panel, bg='#252525')
     group_info_frame.pack(fill=tk.X, padx=15, pady=(15, 10))
     
@@ -865,7 +791,7 @@ try:
     separator2 = tk.Frame(info_panel, bg='#3d3d3d', height=1)
     separator2.pack(fill=tk.X, padx=15, pady=(10, 8))
     
-    # ========== CONSOLE LOG SECTION ==========
+    #  CONSOLE LOG SECTION 
     console_title = tk.Label(
         info_panel,
         text="Console Log",
@@ -976,7 +902,7 @@ try:
     # Bắt đầu process console queue
     root.after(100, process_console_queue)
     
-    # ========== RIGHT SIDE: VIDEO DISPLAY ==========
+    #  RIGHT SIDE: VIDEO DISPLAY 
     video_panel = tk.Frame(main_frame, bg='#1e1e1e')
     video_panel.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
     
@@ -1012,9 +938,8 @@ try:
     video_container.bind('<Configure>', update_container_cache)
     root.bind('<Configure>', update_container_cache)
     
-    # ========== KEYBOARD SHORTCUTS ==========
+    #  KEYBOARD SHORTCUTS 
     def toggle_pause():
-        """Toggle pause/resume detection"""
         global is_paused
         is_paused = not is_paused
         if status_label:
@@ -1024,7 +949,6 @@ try:
                 status_label.config(text="● Running", fg='#00ff00')
     
     def toggle_save_images():
-        """Toggle auto-save hand images"""
         global SAVE_HAND_IMAGES, notification_label, notification_timer
         global missing_image_numbers, save_image_counter
         
@@ -1034,18 +958,18 @@ try:
         if SAVE_HAND_IMAGES:
             missing_image_numbers, save_image_counter = scan_missing_image_numbers(SAVE_DIR)
             if missing_image_numbers:
-                print(f"✓ Đã tìm thấy {len(missing_image_numbers)} số còn thiếu: {missing_image_numbers}")
+                print(f"Đã tìm thấy {len(missing_image_numbers)} số còn thiếu: {missing_image_numbers}")
                 print(f"  Sẽ ưu tiên lấp vào các số này trước khi tiếp tục từ số {save_image_counter}")
             elif save_image_counter > 0:
-                print(f"✓ Đã tìm thấy {save_image_counter} ảnh trong thư mục. Bắt đầu từ số {save_image_counter}")
+                print(f"Đã tìm thấy {save_image_counter} ảnh trong thư mục. Bắt đầu từ số {save_image_counter}")
             else:
-                print(f"✓ Thư mục trống. Bắt đầu từ số 0")
+                print(f"Thư mục trống. Bắt đầu từ số 0")
         
         if notification_label:
             if SAVE_HAND_IMAGES:
-                notification_label.config(text="✓ Auto-save: ON", fg='#00ff00')
+                notification_label.config(text=" Auto-save: ON", fg='#00ff00')
             else:
-                notification_label.config(text="✗ Auto-save: OFF", fg='#ff6b6b')
+                notification_label.config(text=" Auto-save: OFF", fg='#ff6b6b')
         
         # Hủy timer cũ nếu có
         if notification_timer:
@@ -1054,7 +978,7 @@ try:
         # Không tự động ẩn trạng thái auto-save (luôn hiển thị để người dùng biết trạng thái)
         # Trạng thái sẽ chỉ bị thay thế tạm thời khi có thông báo lưu ảnh
         
-        print(f"✓ Auto-save images: {'ON' if SAVE_HAND_IMAGES else 'OFF'}")
+        print(f" Auto-save images: {'ON' if SAVE_HAND_IMAGES else 'OFF'}")
     
     # Bind keyboard shortcuts
     root.bind('<space>', lambda e: toggle_pause())
@@ -1063,13 +987,13 @@ try:
     
     # Bind phím C để bật/tắt chụp ảnh ngẫu nhiên liên tục
     def handle_capture(e=None):
-        print("🔍 Phím C được nhấn - Bật/tắt chụp liên tục")
+        print(" Phím C được nhấn - Bật/tắt chụp liên tục")
         try:
             toggle_continuous_capture()
         except NameError:
-            print("✗ Lỗi: Hàm toggle_continuous_capture() chưa được định nghĩa")
+            print(" Lỗi: Hàm toggle_continuous_capture() chưa được định nghĩa")
         except Exception as ex:
-            print(f"✗ Lỗi khi toggle chụp liên tục: {ex}")
+            print(f" Lỗi khi toggle chụp liên tục: {ex}")
     
     # Bind nhiều cách để đảm bảo hoạt động trên mọi hệ thống
     root.bind('<Key-c>', handle_capture)
@@ -1103,7 +1027,7 @@ try:
     
     root.protocol("WM_DELETE_WINDOW", on_closing)
     
-    # ========== SETTINGS PANEL ==========
+    #  SETTINGS PANEL 
     settings_window = None
     
     def open_settings():
@@ -1150,7 +1074,7 @@ try:
         columns_frame = tk.Frame(content_frame, bg='#1e1e1e')
         columns_frame.pack(fill=tk.BOTH, expand=True)
         
-        # ========== COLUMN 1: Performance Settings ==========
+        #  COLUMN 1: Performance Settings 
         perf_frame = tk.LabelFrame(
             columns_frame,
             text="Performance Settings",
@@ -1225,7 +1149,7 @@ try:
         )
         min_presence_scale.pack(fill=tk.X, pady=5)
         
-        # ========== COLUMN 2: EMA Settings ==========
+        #  COLUMN 2: EMA Settings 
         ema_frame = tk.LabelFrame(
             columns_frame,
             text="EMA Smoothing",
@@ -1329,7 +1253,6 @@ try:
         
         # Nút chọn thư mục
         def browse_save_dir():
-            """Mở dialog chọn thư mục lưu ảnh"""
             global SAVE_DIR, missing_image_numbers, save_image_counter, SAVE_HAND_IMAGES
             selected_dir = filedialog.askdirectory(
                 title="Chọn thư mục lưu ảnh",
@@ -1339,18 +1262,18 @@ try:
                 SAVE_DIR = selected_dir
                 # Cập nhật label hiển thị
                 save_dir_label.config(text=SAVE_DIR)
-                print(f"✓ Đã chọn thư mục lưu ảnh: {SAVE_DIR}")
+                print(f" Đã chọn thư mục lưu ảnh: {SAVE_DIR}")
                 
                 # Nếu auto-save đang bật, quét lại thư mục mới để tìm các số còn thiếu
                 if SAVE_HAND_IMAGES:
                     missing_image_numbers, save_image_counter = scan_missing_image_numbers(SAVE_DIR)
                     if missing_image_numbers:
-                        print(f"✓ Đã tìm thấy {len(missing_image_numbers)} số còn thiếu: {missing_image_numbers}")
+                        print(f" Đã tìm thấy {len(missing_image_numbers)} số còn thiếu: {missing_image_numbers}")
                         print(f"  Sẽ ưu tiên lấp vào các số này trước khi tiếp tục từ số {save_image_counter}")
                     elif save_image_counter > 0:
-                        print(f"✓ Đã tìm thấy {save_image_counter} ảnh trong thư mục. Bắt đầu từ số {save_image_counter}")
+                        print(f" Đã tìm thấy {save_image_counter} ảnh trong thư mục. Bắt đầu từ số {save_image_counter}")
                     else:
-                        print(f"✓ Thư mục trống. Bắt đầu từ số 0")
+                        print(f" Thư mục trống. Bắt đầu từ số 0")
         
         browse_btn = tk.Button(
             save_dir_path_frame,
@@ -1372,7 +1295,6 @@ try:
         button_frame.pack(fill=tk.X, side=tk.BOTTOM)
         
         def apply_settings():
-            """Apply settings changes"""
             global NUM_HANDS, MIN_DETECTION_CONFIDENCE, MIN_PRESENCE_CONFIDENCE, MIN_TRACKING_CONFIDENCE
             global ENABLE_EMA_SMOOTHING, EMA_ALPHA, landmarker, SAVE_HAND_IMAGES, SAVE_DIR
             global missing_image_numbers, save_image_counter
@@ -1398,12 +1320,12 @@ try:
             if (SAVE_HAND_IMAGES and not old_save_state) or (SAVE_HAND_IMAGES and SAVE_DIR != old_save_dir):
                 missing_image_numbers, save_image_counter = scan_missing_image_numbers(SAVE_DIR)
                 if missing_image_numbers:
-                    print(f"✓ Đã tìm thấy {len(missing_image_numbers)} số còn thiếu: {missing_image_numbers}")
+                    print(f" Đã tìm thấy {len(missing_image_numbers)} số còn thiếu: {missing_image_numbers}")
                     print(f"  Sẽ ưu tiên lấp vào các số này trước khi tiếp tục từ số {save_image_counter}")
                 elif save_image_counter > 0:
-                    print(f"✓ Đã tìm thấy {save_image_counter} ảnh trong thư mục. Bắt đầu từ số {save_image_counter}")
+                    print(f" Đã tìm thấy {save_image_counter} ảnh trong thư mục. Bắt đầu từ số {save_image_counter}")
                 else:
-                    print(f"✓ Thư mục trống. Bắt đầu từ số 0")
+                    print(f" Thư mục trống. Bắt đầu từ số 0")
             
             # Kiểm tra xem có cần recreate landmarker không
             need_recreate = (
@@ -1445,14 +1367,14 @@ try:
                     dummy_mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=dummy_frame)
                     landmarker.detect_for_video(dummy_mp_image, 0)
                     
-                    print(f"✓ Landmarker recreated with new settings:")
+                    print(f" Landmarker recreated with new settings:")
                     print(f"  NUM_HANDS={NUM_HANDS}, MIN_DET={MIN_DETECTION_CONFIDENCE:.2f}, "
                           f"MIN_PRESENCE={MIN_PRESENCE_CONFIDENCE:.2f}, MIN_TRACK={MIN_TRACKING_CONFIDENCE:.2f}")
                 except Exception as e:
-                    print(f"✗ Error recreating landmarker: {e}")
+                    print(f" Error recreating landmarker: {e}")
                     return
             
-            print(f"✓ Settings applied:")
+            print(f" Settings applied:")
             print(f"  NUM_HANDS={NUM_HANDS}, MIN_DET={MIN_DETECTION_CONFIDENCE:.2f}, "
                   f"MIN_PRESENCE={MIN_PRESENCE_CONFIDENCE:.2f}, MIN_TRACK={MIN_TRACKING_CONFIDENCE:.2f}")
             print(f"  EMA={ENABLE_EMA_SMOOTHING}, ALPHA={EMA_ALPHA:.2f}")
@@ -1460,7 +1382,6 @@ try:
             print(f"  Save Directory={SAVE_DIR}")
         
         def close_settings():
-            """Close settings window"""
             global settings_window
             if settings_window:
                 settings_window.destroy()
@@ -1527,13 +1448,13 @@ try:
     )
     capture_btn.pack(side=tk.RIGHT, padx=5)
     
-    print("✓ Tkinter UI initialized")
+    print(" Tkinter UI initialized")
 except Exception as e:
     raise RuntimeError(f"Không thể khởi tạo Tkinter UI: {e}") from e
 
 current_photo = None
 
-# ---------- Helper Functions ----------
+# Helper Functions
 def limit_list_size(data_list, max_size):
     """Giới hạn kích thước list, chỉ giữ N giá trị gần nhất"""
     if len(data_list) > max_size:
@@ -1563,13 +1484,6 @@ def get_track_color(track_id):
     return (r, g, b)
 
 def save_hand_image(frame, min_x, min_y, max_x, max_y):
-    """
-    Cắt và lưu ảnh bàn tay với kích thước 640x640
-    
-    Args:
-        frame: Frame gốc (BGR)
-        min_x, min_y, max_x, max_y: Tọa độ bounding box của bàn tay
-    """
     global save_image_counter, last_save_time, notification_label, notification_timer, root
     global missing_image_numbers
     
@@ -1646,7 +1560,7 @@ def save_hand_image(frame, min_x, min_y, max_x, max_y):
                 attempts += 1
             
             if attempts >= max_attempts:
-                print(f"✗ Không thể tìm được tên file trống sau {max_attempts} lần thử")
+                print(f" Không thể tìm được tên file trống sau {max_attempts} lần thử")
                 return
         
         # Tạo tên file và đường dẫn
@@ -1655,7 +1569,7 @@ def save_hand_image(frame, min_x, min_y, max_x, max_y):
         
         # Kiểm tra lại một lần nữa để đảm bảo an toàn (phòng trường hợp có race condition)
         if os.path.exists(filepath):
-            print(f"⚠ File {filename} đã tồn tại, bỏ qua lần lưu này")
+            print(f" File {filename} đã tồn tại, bỏ qua lần lưu này")
             return
         
         # Lưu ảnh
@@ -1666,7 +1580,7 @@ def save_hand_image(frame, min_x, min_y, max_x, max_y):
         
         # Hiển thị thông báo
         if notification_label:
-            notification_label.config(text=f"✓ Đã lưu: {filename}", fg='#00ff00')
+            notification_label.config(text=f" Đã lưu: {filename}", fg='#00ff00')
         
         # Hủy timer cũ nếu có
         if notification_timer:
@@ -1676,15 +1590,15 @@ def save_hand_image(frame, min_x, min_y, max_x, max_y):
         def restore_auto_save_status():
             if notification_label:
                 if SAVE_HAND_IMAGES:
-                    notification_label.config(text="✓ Auto-save: ON", fg='#00ff00')
+                    notification_label.config(text=" Auto-save: ON", fg='#00ff00')
                 else:
-                    notification_label.config(text="✗ Auto-save: OFF", fg='#ff6b6b')
+                    notification_label.config(text=" Auto-save: OFF", fg='#ff6b6b')
         notification_timer = root.after(2000, restore_auto_save_status)
         
-        print(f"✓ Đã lưu ảnh: {filepath}")
+        print(f" Đã lưu ảnh: {filepath}")
         
     except Exception as e:
-        print(f"✗ Lỗi khi lưu ảnh: {e}")
+        print(f" Lỗi khi lưu ảnh: {e}")
 
 def draw_keypoints(frame, keypoints, color=(0, 255, 255), radius=3, conf_threshold=0.3):
     """
@@ -1794,9 +1708,8 @@ def draw_hand_skeleton(frame, keypoints, color=(0, 255, 255), thickness=1, conf_
                     pt2 = (int(x2), int(y2))
                     cv2.line(frame, pt1, pt2, color, thickness)
 
-# ---------- Main Update Loop ----------
+# Main Update Loop
 def update_frame():
-    """Update frame trong Tkinter UI (chạy trong mainloop)"""
     global frame_count, total_objects, prev_display_time, prev_capture_time
     global latest_detection, current_photo
     global inference_fps_list, inference_times, input_fps_list, fps_list, frame_intervals, display_latencies
@@ -1843,7 +1756,7 @@ def update_frame():
         try:
             frame_w, frame_h = frame_original.shape[1], frame_original.shape[0]
         except (AttributeError, IndexError) as e:
-            print(f"⚠ Error getting frame dimensions: {e}")
+            print(f" Error getting frame dimensions: {e}")
             if root and not stop_flag.is_set():
                 root.after(10, update_frame)
             return
@@ -2029,7 +1942,7 @@ def update_frame():
                         save_hand_image(frame_original, min_x, min_y, max_x, max_y)
 
             except Exception as e:
-                print(f"⚠ Error drawing MediaPipe results: {e}")
+                print(f" Error drawing MediaPipe results: {e}")
         
         # Hiển thị với Tkinter
         try:
@@ -2163,7 +2076,7 @@ def update_frame():
                             metrics_labels[key].config(text=new_value)
                             cached_metrics_values[key] = new_value
         except Exception as e:
-            print(f"⚠ Error updating Tkinter UI: {e}")
+            print(f" Error updating Tkinter UI: {e}")
         
         # Print info (thống kê FPS / latency)
         if frame_count % PRINT_EVERY_N_FRAMES == 0 or frame_count <= 5:
@@ -2189,7 +2102,7 @@ def update_frame():
             root.after(delay, update_frame)
         
     except Exception as e:
-        print(f"✗ Error in update_frame: {e}")
+        print(f" Error in update_frame: {e}")
         if not stop_flag.is_set():
             root.after(10, update_frame)
 
@@ -2197,7 +2110,7 @@ def update_frame():
 root.after(10, update_frame)
 root.mainloop()
 
-# ---------- 5. Cleanup & Summary ----------
+# 5. Cleanup & Summary
 # Dừng tất cả threads
 stop_flag.set()
 

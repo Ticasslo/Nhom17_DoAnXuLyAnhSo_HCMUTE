@@ -7,12 +7,10 @@
 # from google.colab import files
 # files.upload()
 
-# ============================================================
 # TRAIN GESTURE MODEL - 46 FEATURES
 # WITH LANDMARK AUGMENTATION (ROTATION + NOISE) - TRAIN ONLY
 # SAVE: SavedModel (BEST + LAST) + best_model.keras
 # TensorFlow 2.16.1 / Keras 3
-# ============================================================
 
 import os
 import pickle
@@ -27,9 +25,7 @@ from sklearn.utils.class_weight import compute_class_weight
 import tensorflow as tf
 from tensorflow.keras import layers, models, callbacks
 
-# =========================
 # CONFIG
-# =========================
 CSV_PATH = "dataset.csv"
 
 BEST_KERAS_PATH = "best_model.keras"      # best checkpoint (Keras format)
@@ -47,48 +43,40 @@ ROTATION_DEG = 8          # random rotation ±8 degrees
 NOISE_STD = 0.003         # gaussian noise std
 AUGMENT_TIMES = 1         # each train sample generates +N augmented copies
 
-# =========================
 # 0) REPRODUCIBILITY
-# =========================
 np.random.seed(SEED)
 tf.keras.utils.set_random_seed(SEED)
 
-# =========================
 # 1) LOAD DATASET
-# =========================
 if not os.path.exists(CSV_PATH):
-    raise FileNotFoundError(f"❌ Không tìm thấy {CSV_PATH}")
+    raise FileNotFoundError(f"Không tìm thấy {CSV_PATH}")
 
 df = pd.read_csv(CSV_PATH)
 
 feat_cols = [c for c in df.columns if c.startswith("feat_")]
 if len(feat_cols) != 46:
-    raise ValueError(f"❌ Dataset có {len(feat_cols)} features, cần đúng 46 (feat_*)")
+    raise ValueError(f"Dataset có {len(feat_cols)} features, cần đúng 46 (feat_*)")
 
 if "label" not in df.columns:
-    raise ValueError("❌ Dataset thiếu cột 'label'")
+    raise ValueError("Dataset thiếu cột 'label'")
 
 df = df.dropna(subset=feat_cols + ["label"]).reset_index(drop=True)
 
 X = df[feat_cols].astype(np.float32).values
 y_str = df["label"].astype(str).values
 
-print("✅ Dataset loaded:", df.shape)
-print("✅ X shape:", X.shape)
+print("Dataset loaded:", df.shape)
+print("X shape:", X.shape)
 
-# =========================
 # 2) LABEL ENCODER
-# =========================
 le = LabelEncoder()
 y = le.fit_transform(y_str)
 num_classes = len(le.classes_)
 
-print("✅ Num classes:", num_classes)
-print("✅ Labels:", list(le.classes_))
+print("Num classes:", num_classes)
+print("Labels:", list(le.classes_))
 
-# =========================
 # 3) TRAIN / VAL / TEST SPLIT
-# =========================
 X_train, X_temp, y_train, y_temp = train_test_split(
     X, y, test_size=0.30, random_state=SEED, stratify=y
 )
@@ -97,25 +85,13 @@ X_val, X_test, y_val, y_test = train_test_split(
     X_temp, y_temp, test_size=0.50, random_state=SEED, stratify=y_temp
 )
 
-print("✅ Split:")
+print("Split:")
 print("   Train:", X_train.shape)
 print("   Val  :", X_val.shape)
 print("   Test :", X_test.shape)
-# =========================
-# 4) DATA AUGMENTATION (TRAIN ONLY)
-# =========================
-# Assumption:
-# - 46 features includes landmarks in the first 42 dims (21 points x,y)
-# - the remaining dims (42..45) are extra features (e.g., orientation, etc.)
-#
-# Rotation should ONLY apply to x,y landmark pairs (0..41)
-# Noise can apply to all features (or you can limit to landmarks only)
 
+# 4) DATA AUGMENTATION (TRAIN ONLY)
 def rotate_xy_pairs(X_in, max_deg, pair_end=42):
-    """
-    Rotate x,y landmark pairs in X_in[:, 0:pair_end] around origin (0,0).
-    pair_end=42 => 21 points (x,y).
-    """
     X_out = X_in.copy()
 
     angle = np.deg2rad(np.random.uniform(-max_deg, max_deg))
@@ -131,11 +107,6 @@ def rotate_xy_pairs(X_in, max_deg, pair_end=42):
     return X_out
 
 def add_gaussian_noise(X_in, std, noise_on_all=True, pair_end=42):
-    """
-    Add gaussian noise.
-    - noise_on_all=True: add noise to all 46 features
-    - noise_on_all=False: add noise only to landmarks (0..pair_end-1)
-    """
     X_out = X_in.copy()
     if std <= 0:
         return X_out
@@ -150,10 +121,6 @@ def add_gaussian_noise(X_in, std, noise_on_all=True, pair_end=42):
     return X_out
 
 def augment_train_data(X_in, y_in, times=1, rot_deg=8, noise_std=0.003):
-    """
-    Create augmented copies for training set only.
-    Returns: X_aug, y_aug
-    """
     X_list = [X_in]
     y_list = [y_in]
 
@@ -173,13 +140,11 @@ X_train_aug, y_train_aug = augment_train_data(
     noise_std=NOISE_STD
 )
 
-print("🔥 After augmentation:")
+print("After augmentation:")
 print("   X_train_aug:", X_train_aug.shape)
 print("   y_train_aug:", y_train_aug.shape)
 
-# =========================
 # 5) CLASS WEIGHT (ON AUGMENTED TRAIN)
-# =========================
 classes = np.unique(y_train_aug)
 weights = compute_class_weight(
     class_weight="balanced",
@@ -187,11 +152,9 @@ weights = compute_class_weight(
     y=y_train_aug
 )
 class_weight = {int(c): float(w) for c, w in zip(classes, weights)}
-print("✅ Class weight computed.")
+print("Class weight computed.")
 
-# =========================
 # 6) BUILD MODEL
-# =========================
 model = models.Sequential([
     layers.Input(shape=(46,)),
 
@@ -217,9 +180,7 @@ model.compile(
 
 model.summary()
 
-# =========================
-# 7) CALLBACKS (SAVE BEST .KERAS)
-# =========================
+# 7) CALLBACKS
 checkpoint_cb = callbacks.ModelCheckpoint(
     filepath=BEST_KERAS_PATH,
     monitor="val_accuracy",
@@ -247,9 +208,7 @@ cbs = [
     checkpoint_cb
 ]
 
-# =========================
 # 8) TRAIN
-# =========================
 history = model.fit(
     X_train_aug, y_train_aug,
     validation_data=(X_val, y_val),
@@ -261,17 +220,12 @@ history = model.fit(
     verbose=1
 )
 
-# =========================
 # 9) TEST EVAL
-# =========================
 test_loss, test_acc = model.evaluate(X_test, y_test, verbose=0)
-print(f"\n✅ TEST ACCURACY: {test_acc:.4f}")
-print(f"✅ TEST LOSS    : {test_loss:.4f}")
+print(f"\nTEST ACCURACY: {test_acc:.4f}")
+print(f"TEST LOSS    : {test_loss:.4f}")
 
-# =========================
 # 10) EXPORT SAVEDMODEL (LAST + BEST)
-# =========================
-# Clean old folders to avoid confusion
 def safe_rmtree(path):
     if os.path.isdir(path):
         import shutil
@@ -280,16 +234,14 @@ def safe_rmtree(path):
 safe_rmtree(LAST_SAVEDMODEL_DIR)
 safe_rmtree(BEST_SAVEDMODEL_DIR)
 
-print("🔄 Export LAST SavedModel ->", LAST_SAVEDMODEL_DIR)
+print("Export LAST SavedModel ->", LAST_SAVEDMODEL_DIR)
 model.export(LAST_SAVEDMODEL_DIR)
 
-print("🔄 Export BEST SavedModel ->", BEST_SAVEDMODEL_DIR)
+print("Export BEST SavedModel ->", BEST_SAVEDMODEL_DIR)
 best_model = tf.keras.models.load_model(BEST_KERAS_PATH)
 best_model.export(BEST_SAVEDMODEL_DIR)
 
-# =========================
 # 11) SAVE METADATA
-# =========================
 metadata = {
     "num_features": 46,
     "feature_columns": feat_cols,
@@ -314,15 +266,13 @@ metadata = {
 with open(META_PATH, "wb") as f:
     pickle.dump(metadata, f)
 
-print("\n✅ Saved:")
+print("\nSaved:")
 print("   - BEST .keras      :", BEST_KERAS_PATH)
 print("   - BEST SavedModel  :", BEST_SAVEDMODEL_DIR)
 print("   - LAST SavedModel  :", LAST_SAVEDMODEL_DIR)
 print("   - Metadata         :", META_PATH)
 
-# =========================
 # 12) PLOT ACC & LOSS (SAVE PNG)
-# =========================
 hist = history.history
 
 plt.figure(dpi=150)
@@ -348,5 +298,3 @@ plt.grid(True)
 plt.tight_layout()
 plt.savefig("loss.png", dpi=300)
 plt.show()
-
-print("\n✅ Done. Outputs: accuracy.png, loss.png, best_model.keras, saved_model_best/, saved_model_last/, metadata.pkl")

@@ -6,9 +6,7 @@ import socket
 from typing import Optional
 from zeroconf import ServiceInfo, Zeroconf
 
-# ==========================================
 # 1. CẤU HÌNH HỆ THỐNG MQTT
-# ==========================================
 # Sử dụng IP LAN của máy tính để ESP32 có thể kết nối được
 # Tự động lấy IP LAN của máy tính (giống như ESP32 đang kết nối đến)
 def get_local_ip():

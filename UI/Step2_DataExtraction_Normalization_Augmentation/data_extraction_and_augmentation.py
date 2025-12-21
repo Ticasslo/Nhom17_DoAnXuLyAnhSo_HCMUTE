@@ -13,7 +13,7 @@ Quy trình:
 3. Duyệt qua từng ảnh trong dataset
 4. Extract landmarks và normalize
 5. Augmentation cho symmetric gestures (flip ảnh)
-6. Lưu vào CSV với NUM_FEATURES features (42 landmarks + 2 Y_hand + 2 X_hand) + label + has_hand + handedness
+6. Lưu vào CSV với NUM_FEATURES features (42 landmarks + 2 Y_hand + 2 X_hand) + label + has_hand + handedness (Left/Right)
 """
 
 import os
@@ -23,35 +23,20 @@ import pandas as pd
 import mediapipe as mp
 from mediapipe.tasks.python import vision
 
-# ===============================================================
 # 1. ĐỊNH NGHĨA GESTURE TYPES
-# ===============================================================
-
 # Danh sách gesture đối xứng (symmetric)
 # Các gesture này có thể flip ảnh để tăng data
-# Theo yêu cầu: S_A đến S_Z, S_Ok, S_ThumbsUp, S_Space, S_Del, S_Nothing
 # Và các gesture S_* khác trong dataset thực tế
 SYMMETRIC_GESTURES = {
-    # Chữ cái đối xứng (theo yêu cầu)
-    'S_A', 'S_B', 'S_C', 'S_D', 'S_E', 'S_F', 'S_G', 'S_H',
-    'S_I', 'S_J', 'S_K', 'S_L', 'S_M', 'S_N', 'S_O', 'S_P',
-    'S_Q', 'S_R', 'S_S', 'S_T', 'S_U', 'S_V', 'S_W', 'S_X',
-    'S_Y', 'S_Z',
-    # Gesture đối xứng khác
-    'S_Ok', 'S_ThumbsUp',
-    'S_Space', 'S_Del', 'S_Nothing',
     # Gesture điều khiển thiết bị (đối xứng)
     'S_FanOff', 'S_Start', 'S_FanUp', 'S_FanDown',
     'S_FanSpeed1', 'S_FanSpeed2', 'S_FanSpeed3',
     'S_Light1On', 'S_Light1Off', 'S_Light2On', 'S_Light2Off',
 }
-
 # Các gesture còn lại là ASYMMETRIC (A_LH_*, A_RH_*)
 # Không flip vì tay trái và tay phải có ý nghĩa khác nhau
 
-# ===============================================================
 # CONSTANTS
-# ===============================================================
 NUM_LANDMARKS = 21  # Số lượng landmarks cho mỗi hand
 # MCP (Metacarpophalangeal) joints: Thumb=2, Index=5, Middle=9, Ring=13, Pinky=17
 # MCP đại diện cho hướng của ngón tay, không bị ảnh hưởng bởi việc gập ngón
@@ -62,14 +47,7 @@ INDEX_MCP_IDX = 5   # Index finger MCP landmark index
 PINKY_MCP_IDX = 17  # Pinky finger MCP landmark index
 NUM_FEATURES = 46  # 42 landmarks (21 * 2) + 2 Y_hand + 2 X_hand = 46 features
 
-# ===============================================================
-# VALIDATION: Kiểm tra handedness có khớp với label không
-# ===============================================================
-
-# ===============================================================
-# 1.5. HÀM TIỀN XỬ LÝ (ISP)
-# ===============================================================
-
+# 1.5. HÀM TIỀN XỬ LÝ
 def tien_xu_ly(img):
     # MỤC TIÊU CHÍNH: CÂN BẰNG DATASET - Giúp đồng nhất dữ liệu Landmarks giữa các ảnh chụp ở điều kiện khác nhau.
     if img is None:
@@ -136,10 +114,7 @@ def validate_handedness(gesture_folder, detected_handedness):
     else:
         return False, expected_hand, f"Không khớp: expected {expected_hand}, detected {detected_hand}"
 
-# ===============================================================
 # 2. HÀM NORMALIZE FEATURES
-# ===============================================================
-
 def normalize_features(landmarks_array):
     """
     Normalize landmarks: relative + scale normalization + orientation features
@@ -173,7 +148,7 @@ def normalize_features(landmarks_array):
     else:
         normalized_x, normalized_y = relative_x, relative_y
     
-    # ========== ORIENTATION FEATURES (HAND LOCAL SPACE) ==========
+    # ORIENTATION FEATURES
     # Tính 2 trục cơ bản của bàn tay để phân biệt hướng và rotation
     # 
     # QUY TRÌNH:
@@ -257,7 +232,6 @@ def normalize_features(landmarks_array):
     # X_hand: trục ngang của bàn tay (index_MCP → pinky_MCP) - hướng trái/phải + rotation
     # Cả 2 đã normalize thành unit vectors → dùng trực tiếp
     # Model tự học từ raw orientation values để phân biệt Up/Down/Left/Right + rotation angle
-    # ==============================================
     
     # Flatten thành NUM_FEATURES features (42 landmarks + 2 Y_hand + 2 X_hand)
     feats = np.empty(NUM_FEATURES, dtype=np.float32)
@@ -275,10 +249,7 @@ def normalize_features(landmarks_array):
     
     return feats
 
-# ===============================================================
 # 3. MEDIAPIPE HAND LANDMARKER SETUP
-# ===============================================================
-
 # Đường dẫn model MediaPipe (.task) dùng chung cho TOÀN project: Nhom17_DoAnXuLyAnhSo_HCMUTE/models/hand_landmarker.task
 script_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.dirname(os.path.dirname(script_dir))  # .../Nhom17_DoAnXuLyAnhSo_HCMUTE
@@ -296,8 +267,6 @@ VisionRunningMode = mp.tasks.vision.RunningMode
 
 # Tạo HandLandmarker với static image mode
 base_options = BaseOptions(model_asset_path=HAND_LANDMARKER_MODEL_PATH)
-# Nới lỏng ngưỡng để giảm bỏ sót tay
-# Ảnh đầu vào đã 640x640 nên không cần resize thêm
 options = HandLandmarkerOptions(
     base_options=base_options,
     running_mode=VisionRunningMode.IMAGE,  # IMAGE mode cho static images
@@ -307,13 +276,9 @@ options = HandLandmarkerOptions(
     min_tracking_confidence=0.5,
 )
 landmarker = HandLandmarker.create_from_options(options)
-
 print("[OK] MediaPipe Hand Landmarker da duoc khoi tao")
 
-# ===============================================================
 # 4. DATASET PATH
-# ===============================================================
-
 DATASET_DIR = os.path.join(script_dir, "dataset")
 
 if not os.path.exists(DATASET_DIR):
@@ -321,16 +286,7 @@ if not os.path.exists(DATASET_DIR):
 
 print(f"[OK] Dataset directory: {DATASET_DIR}")
 
-# ===============================================================
-# 4.5. VALIDATION HANDEDNESS
-# ===============================================================
-# LUÔN LUÔN bỏ qua các sample có handedness không khớp với label folder
-# (A_LH_* phải có handedness = Left, A_RH_* phải có handedness = Right)
-
-# ===============================================================
 # 5. DATA EXTRACTION + AUGMENTATION PIPELINE
-# ===============================================================
-
 data = []
 labels = []
 has_hand_flags = []
@@ -402,7 +358,7 @@ for gesture_folder in gesture_folders:
         detection_result = landmarker.detect(mp_image)
         del mp_image
         
-        # ========== TRƯỜNG HỢP S_Nothing: KHÔNG có tay ==========
+        #  TRƯỜNG HỢP S_Nothing: KHÔNG có tay 
         if gesture_folder == 'S_Nothing':
             if detection_result.hand_landmarks and len(detection_result.hand_landmarks) > 0:
                 # Có tay thì bỏ (vì nhãn này là không tay)
@@ -419,7 +375,7 @@ for gesture_folder in gesture_folders:
             processed_images += 1
             continue  # sang ảnh kế tiếp
         
-        # ========== CÁC GESTURE KHÁC: cần đúng 1 tay ==========
+        #  CÁC GESTURE KHÁC: cần đúng 1 tay 
         if not detection_result.hand_landmarks or len(detection_result.hand_landmarks) == 0:
             msg = f"{gesture_folder}/{img_file}: 0 tay (skip)"
             skip_log.append(msg)
@@ -494,7 +450,7 @@ for gesture_folder in gesture_folders:
         gesture_original_samples += 1
         processed_images += 1
         
-        # ========== DATA AUGMENTATION ==========
+        # DATA AUGMENTATION
         # CHỈ ÁP DỤNG CHO SYMMETRIC GESTURES
         # Asymmetric gestures (A_LH_*, A_RH_*) KHÔNG được augment vì:
         # - Tay trái và tay phải có ý nghĩa khác nhau
@@ -589,13 +545,9 @@ for gesture_folder in gesture_folders:
     else:
         print(f"  [OK] Đã xử lý: {gesture_samples} samples từ {len(image_files)} ảnh (không augmentation)")
 
-# ===============================================================
 # 6. LƯU DATA VÀO CSV
-# ===============================================================
-
 print(f"\n{'='*60}")
 print(f"Dang luu data vao CSV...")
-print(f"{'='*60}\n")
 
 # Tạo DataFrame
 feat_cols = [f'feat_{i}' for i in range(NUM_FEATURES)]  # NUM_FEATURES: 42 landmarks + 2 Y_hand + 2 X_hand
@@ -608,24 +560,20 @@ df['handedness'] = handedness_flags
 output_csv = os.path.join(script_dir, "dataset.csv")
 df.to_csv(output_csv, index=False)
 
-# ===============================================================
 # 7. THỐNG KÊ KẾT QUẢ
-# ===============================================================
-
 print(f"{'='*60}")
 print(f"[OK] HOAN THANH DATA EXTRACTION + AUGMENTATION")
-print(f"{'='*60}")
 print(f"[STATS] Thong ke:")
 print(f"  - Tong so anh: {total_images}")
 print(f"  - Da xu ly: {processed_images} anh")
 print(f"  - Da bo qua (skip hoan toan): {skipped_images} anh")
 if augmentation_failed_count > 0:
-    print(f"  - ⚠️  Augmentation failed: {augmentation_failed_count} lan (anh goc OK nhung flip fail)")
+    print(f"  - Augmentation failed: {augmentation_failed_count} lan (anh goc OK nhung flip fail)")
 print(f"  - Tong so samples: {len(data)}")
 print(f"  - So gesture types: {len(set(labels))}")
 print(f"  - Unique labels: {sorted(set(labels))}")
 if handedness_mismatch_count > 0:
-    print(f"  - ⚠️  Handedness mismatch: {handedness_mismatch_count} samples (đã bỏ qua)")
+    print(f"  - Handedness mismatch: {handedness_mismatch_count} samples (đã bỏ qua)")
 print(f"\n[FILE] File CSV da luu: {output_csv}")
 print(f"{'='*60}\n")
 
@@ -641,9 +589,7 @@ if handedness_mismatch_count > 0:
     print(f"\n[WARNING] Handedness mismatch: {handedness_mismatch_count} samples:")
     for detail in handedness_mismatch_details:
         print(f"  - {detail}")
-
-print(f"\n{'='*60}\n")
-
+        
 # Cleanup
 landmarker.close()
 

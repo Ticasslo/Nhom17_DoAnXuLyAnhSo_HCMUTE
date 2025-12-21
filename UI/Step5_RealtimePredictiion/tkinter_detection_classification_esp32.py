@@ -22,7 +22,7 @@ from mqtt_publisher import init_mqtt_publisher, publish_gesture_command, get_mqt
 # Giảm warning log
 warnings.filterwarnings("ignore", category=UserWarning)
 
-# ========== 0. CONSTANTS ==========
+# 0. CONSTANTS
 # Label prefixes
 ASYMMETRIC_PREFIX_RH = "A_RH_"
 ASYMMETRIC_PREFIX_LH = "A_LH_"
@@ -39,7 +39,7 @@ INDEX_MCP_IDX = 5   # Index finger MCP landmark index
 PINKY_MCP_IDX = 17  # Pinky finger MCP landmark index
 NUM_FEATURES = 46  # 42 landmarks (21 * 2) + 2 Y_hand + 2 X_hand = 46 features
 
-# ========== 1. CONFIGURATION ==========
+# 1. CONFIGURATION
 # Camera settings - ESP32 Camera Stream
 # Thay đổi IP và port theo ESP32 của bạn
 # Ví dụ: "http://192.168.1.100:80/stream" hoặc "http://esp32-cam.local:80/stream"
@@ -132,9 +132,9 @@ FRAME_BUFFER_SIZE = 1
 DETECTION_BUFFER_SIZE = 1
 
 DETECTION_SKIP_FRAMES = 1  # Số frame bỏ qua giữa các lần detection (0 = detect mọi frame)
-# =======================================
 
-# ---------- 2. Load Gesture Model & Metadata ----------
+
+# 2. Load Gesture Model & Metadata
 script_dir = os.path.dirname(os.path.abspath(__file__))
 
 # project_root = .../Nhom17_DoAnXuLyAnhSo_HCMUTE
@@ -209,7 +209,7 @@ with open(METADATA_PATH, 'rb') as f:
 print(f"  → Model ready: {num_classes} classes")
 
 
-# ---------- 2.1. GestureVoter Class ----------
+# 2.1. GestureVoter Class
 class GestureVoter:
     def __init__(self,
                  acceptance_time=GESTURE_VOTER_ACCEPTANCE_TIME,
@@ -299,7 +299,7 @@ class GestureVoter:
 # Global gesture voters (một voter cho mỗi hand)
 gesture_voters = {}
 
-# ---------- 2.1.5. Optimized Prediction Function (tf.function) ----------
+# 2.1.5. Optimized Prediction Function (tf.function)
 # SavedModel: gọi qua signature 'serving_default' với input dict {'input_layer_1': features_batch}
 @tf.function(reduce_retracing=True)
 def predict_gesture(features_batch):
@@ -315,7 +315,7 @@ def predict_gesture(features_batch):
     return result['output_0']
 
 
-# ---------- 2.2. Normalize Features Function ----------
+# 2.2. Normalize Features Function
 def normalize_features(landmarks_array):
     """
     Normalize landmarks: relative + scale normalization + orientation features
@@ -339,7 +339,7 @@ def normalize_features(landmarks_array):
     else:
         normalized_x, normalized_y = relative_x, relative_y
     
-    # ========== ORIENTATION FEATURES (HAND LOCAL SPACE) ==========
+    #  ORIENTATION FEATURES (HAND LOCAL SPACE) 
     # Tính 2 trục cơ bản của bàn tay để phân biệt hướng và rotation
     # PHẢI GIỐNG HỆT với hàm normalize_features()
     # 
@@ -424,7 +424,6 @@ def normalize_features(landmarks_array):
     # X_hand: trục ngang của bàn tay (index_MCP → pinky_MCP) - hướng trái/phải + rotation
     # Cả 2 đã normalize thành unit vectors → dùng trực tiếp
     # Model tự học từ raw orientation values để phân biệt Up/Down/Left/Right + rotation angle
-    # ==============================================
     
     # Flatten thành NUM_FEATURES features (42 landmarks + 2 Y_hand + 2 X_hand)
     feats = np.empty(NUM_FEATURES, dtype=np.float32)
@@ -443,7 +442,7 @@ def normalize_features(landmarks_array):
     return feats
 
 
-# ---------- 2.2.1. Check Orientation Validity Function ----------
+# 2.2.1. Check Orientation Validity Function
 def check_orientation_validity(landmarks_array):
     landmarks = np.asarray(landmarks_array, dtype=np.float32)
     x_coords = landmarks[:, 0]
@@ -480,7 +479,7 @@ def check_orientation_validity(landmarks_array):
     
     return is_valid, y_hand_mag, x_hand_mag
 
-# ---------- 2.2.2. Validate Handedness for Asymmetric Gestures ----------
+# 2.2.2. Validate Handedness for Asymmetric Gestures
 def validate_handedness_for_prediction(prediction_label, detected_handedness):
     # Chỉ validate cho asymmetric gestures
     if not (prediction_label.startswith(ASYMMETRIC_PREFIX_LH) or prediction_label.startswith(ASYMMETRIC_PREFIX_RH)):
@@ -513,7 +512,7 @@ def validate_handedness_for_prediction(prediction_label, detected_handedness):
     else:
         return False, expected_hand, f"Không khớp: expected {expected_hand}, detected {detected_hand}"
 
-# ---------- 2.3. Map Prediction Label Function ----------
+# 2.3. Map Prediction Label Function
 def map_prediction_label(prediction, handedness_label, SYMMETRIC_GESTURES):
     # Symmetric gestures: bỏ prefix "S_"
     if prediction in SYMMETRIC_GESTURES:
@@ -531,7 +530,7 @@ def map_prediction_label(prediction, handedness_label, SYMMETRIC_GESTURES):
     # Fallback
     return prediction
 
-# ---------- 2.4. MediaPipe Hand Landmarker ----------
+# 2.4. MediaPipe Hand Landmarker
 # Model MediaPipe (.task) dùng chung cho TOÀN project, đặt tại: Nhom17_DoAnXuLyAnhSo_HCMUTE/models/hand_landmarker.task
 # Model TF SavedModel (phân loại cử chỉ) cũng đặt tại: Nhom17_DoAnXuLyAnhSo_HCMUTE/models/SavedModel/...
 
@@ -547,14 +546,6 @@ BaseOptions = mp.tasks.BaseOptions
 HandLandmarker = vision.HandLandmarker
 HandLandmarkerOptions = vision.HandLandmarkerOptions
 VisionRunningMode = mp.tasks.vision.RunningMode
-
-# Tối ưu hiệu suất cho Windows:
-# - Lưu ý: MediaPipe Python trên Windows KHÔNG hỗ trợ GPU delegate
-# - Các tối ưu đã áp dụng:
-#   1. Warm-up model (giảm latency spike)
-#   2. Tối ưu số lượng hands detect (giảm num_hands nếu không cần nhiều)
-#   3. Multi-threading
-#   4. Tối ưu confidence thresholds
 base_options = BaseOptions(model_asset_path=HAND_LANDMARKER_MODEL_PATH)
 
 # MediaPipe sử dụng 2-stage pipeline: BlazePalm (palm detector) + Hand landmark model
@@ -581,7 +572,7 @@ try:
 except Exception as e:
     print(f"  → Warm-up failed (non-critical): {e}")
 
-# ---------- EMA Smoothing State ----------
+# EMA Smoothing State
 # EMA (Exponential Moving Average) state for each hand
 # Structure: {hand_idx: {'landmarks': array, 'last_seen': timestamp}}
 ema_state = {}
@@ -626,7 +617,7 @@ def cleanup_old_ema_state(current_hand_indices, max_age_seconds=5):
         if idx in current_hand_indices or (current_time - state['last_seen']) < max_age_seconds
     }
 
-# ---------- 3. Queue & threading setup ----------
+# 3. Queue & threading setup
 stream_url = SOURCE
 target_fps = 30.0
 
@@ -655,7 +646,7 @@ try:
     init_mqtt_publisher()
     print("  → MQTT Publisher initialized")
 except Exception as e:
-    print(f"  ✗ MQTT Publisher init failed: {e}")
+    print(f"  MQTT Publisher init failed: {e}")
     raise  # Dừng chương trình nếu không init được MQTT
 
 print(f"Source: {stream_url}")
@@ -686,10 +677,7 @@ last_activity_time = time.time()
 SYSTEM_TIMEOUT_SECONDS = 20.0
 
 def frame_grabber_thread():
-    """
-    Thread 1: Đọc frame từ ESP32 camera stream và đưa vào queue.
-    Có retry logic và tự động reconnect khi ESP32 disconnect.
-    """
+    # Thread 1: Đọc frame từ ESP32 camera stream và đưa vào queue.
     global queue_drop_count
     
     # Retry logic cho ESP32 stream
@@ -702,7 +690,7 @@ def frame_grabber_thread():
         
         if not cap.isOpened():
             retry_count += 1
-            print(f"✗ Cannot open ESP32 stream (attempt {retry_count}/{MAX_RETRIES})")
+            print(f" Cannot open ESP32 stream (attempt {retry_count}/{MAX_RETRIES})")
             print(f"  → Check: ESP32 online? URL correct? WiFi stable?")
             print(f"  → Test URL in browser: {stream_url}")
             time.sleep(2)
@@ -756,7 +744,7 @@ def frame_grabber_thread():
             time.sleep(1)
     
     if retry_count >= MAX_RETRIES:
-        print(f"✗ Failed to connect after {MAX_RETRIES} retries")
+        print(f"Failed to connect after {MAX_RETRIES} retries")
         print(f"  → Check ESP32: Is it running? Is URL correct?")
         print(f"  → Test in browser: {stream_url}")
     
@@ -815,7 +803,7 @@ def hand_landmarker_thread():
                         with queue_drop_lock:
                             queue_drop_count += 1
             except Exception as e:
-                print(f"✗ Error in HandLandmarker thread processing: {e}")
+                print(f" Error in HandLandmarker thread processing: {e}")
             finally:
                 # Đảm bảo task_done() chỉ được gọi khi đã lấy được item
                 if item_retrieved:
@@ -826,7 +814,7 @@ def hand_landmarker_thread():
                 break
             continue
         except Exception as e:
-            print(f"✗ Error in HandLandmarker thread (queue get): {e}")
+            print(f" Error in HandLandmarker thread (queue get): {e}")
             continue
     
     print("Thread 2 (HandLandmarker) stopped")
@@ -844,7 +832,7 @@ thread2.start()
 
 pred_start = time.time()
 
-# ---------- 4. Hiển thị real-time ----------
+# 4. Hiển thị real-time
 total_objects = 0
 frame_count = 0
 MAX_FPS_HISTORY = 300
@@ -873,7 +861,7 @@ cached_metrics_values = {}  # Cache metrics values để chỉ update khi thay �
 # UI State
 is_paused = False
 
-# ---------- Tkinter UI Setup ----------
+# Tkinter UI Setup
 try:
     root = tk.Tk()
     root.title("MediaPipe Hand Landmarker - Real-time Detection")
@@ -894,7 +882,7 @@ try:
     y = (screen_height - root.winfo_height()) // 2 - 35
     root.geometry(f"+{x}+{y}")
     
-    # ========== HEADER ==========
+    #  HEADER 
     header_frame = tk.Frame(root, bg='#2d2d2d', height=50)
     header_frame.pack(fill=tk.X, padx=0, pady=0)
     header_frame.pack_propagate(False)
@@ -917,16 +905,16 @@ try:
     )
     status_label.pack(side=tk.RIGHT, padx=15, pady=10)
     
-    # ========== MAIN CONTENT AREA ==========
+    #  MAIN CONTENT AREA 
     main_frame = tk.Frame(root, bg='#1e1e1e')
     main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
     
-    # ========== LEFT SIDE: INFO PANEL ==========
+    #  LEFT SIDE: INFO PANEL 
     info_panel = tk.Frame(main_frame, bg='#252525', width=INFO_PANEL_WIDTH)
     info_panel.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 10))
     info_panel.pack_propagate(False)
     
-    # ========== GROUP INFO SECTION ==========
+    #  GROUP INFO SECTION 
     group_info_frame = tk.Frame(info_panel, bg='#252525')
     group_info_frame.pack(fill=tk.X, padx=15, pady=(15, 10))
     
@@ -1024,7 +1012,7 @@ try:
     separator2 = tk.Frame(info_panel, bg='#3d3d3d', height=1)
     separator2.pack(fill=tk.X, padx=15, pady=(10, 8))
     
-    # ========== CONSOLE LOG SECTION ==========
+    #  CONSOLE LOG SECTION 
     console_title = tk.Label(
         info_panel,
         text="Console Log",
@@ -1135,7 +1123,7 @@ try:
     # Bắt đầu process console queue
     root.after(100, process_console_queue)
     
-    # ========== RIGHT SIDE: VIDEO DISPLAY ==========
+    #  RIGHT SIDE: VIDEO DISPLAY 
     video_panel = tk.Frame(main_frame, bg='#1e1e1e')
     video_panel.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
     
@@ -1171,7 +1159,7 @@ try:
     video_container.bind('<Configure>', update_container_cache)
     root.bind('<Configure>', update_container_cache)
     
-    # ========== KEYBOARD SHORTCUTS ==========
+    #  KEYBOARD SHORTCUTS 
     def toggle_pause():
         global is_paused
         is_paused = not is_paused
@@ -1199,7 +1187,7 @@ try:
     
     root.protocol("WM_DELETE_WINDOW", on_closing)
     
-    # ========== SETTINGS PANEL ==========
+    #  SETTINGS PANEL 
     settings_window = None
     
     def open_settings():
@@ -1245,7 +1233,7 @@ try:
         columns_frame = tk.Frame(content_frame, bg='#1e1e1e')
         columns_frame.pack(fill=tk.BOTH, expand=True)
         
-        # ========== COLUMN 1: Performance Settings ==========
+        #  COLUMN 1: Performance Settings 
         perf_frame = tk.LabelFrame(
             columns_frame,
             text="Performance Settings",
@@ -1320,7 +1308,7 @@ try:
         )
         min_presence_scale.pack(fill=tk.X, pady=5)
         
-        # ========== COLUMN 2: EMA Settings ==========
+        #  COLUMN 2: EMA Settings 
         ema_frame = tk.LabelFrame(
             columns_frame,
             text="EMA Smoothing",
@@ -1428,24 +1416,23 @@ try:
                         dummy_mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=dummy_frame)
                         landmarker.detect_for_video(dummy_mp_image, 0)
                     
-                    print(f"✓ Landmarker recreated with new settings:")
+                    print(f"Landmarker recreated with new settings:")
                     print(f"  NUM_HANDS={NUM_HANDS}, MIN_DET={MIN_DETECTION_CONFIDENCE:.2f}, "
                           f"MIN_PRESENCE={MIN_PRESENCE_CONFIDENCE:.2f}, MIN_TRACK={MIN_TRACKING_CONFIDENCE:.2f}")
                     
                     # Restore pause state
                     is_paused = old_pause_state
                 except Exception as e:
-                    print(f"✗ Error recreating landmarker: {e}")
+                    print(f"Error recreating landmarker: {e}")
                     is_paused = old_pause_state  # Restore pause state nếu có lỗi
                     return
             
-            print(f"✓ Settings applied:")
+            print(f"Settings applied:")
             print(f"  NUM_HANDS={NUM_HANDS}, MIN_DET={MIN_DETECTION_CONFIDENCE:.2f}, "
                   f"MIN_PRESENCE={MIN_PRESENCE_CONFIDENCE:.2f}, MIN_TRACK={MIN_TRACKING_CONFIDENCE:.2f}")
             print(f"  EMA={ENABLE_EMA_SMOOTHING}, ALPHA={EMA_ALPHA:.2f}")
         
         def close_settings():
-            """Close settings window"""
             global settings_window
             if settings_window:
                 settings_window.destroy()
@@ -1495,13 +1482,13 @@ try:
     )
     settings_btn.pack(side=tk.RIGHT, padx=5)
     
-    print("✓ Tkinter UI initialized")
+    print("Tkinter UI initialized")
 except Exception as e:
     raise RuntimeError(f"Không thể khởi tạo Tkinter UI: {e}") from e
 
 current_photo = None
 
-# ---------- Helper Functions ----------
+# Helper Functions
 def limit_list_size(data_list, max_size):
     """Giới hạn kích thước list, chỉ giữ N giá trị gần nhất"""
     if len(data_list) > max_size:
@@ -1533,8 +1520,6 @@ def get_track_color(track_id):
 def draw_keypoints(frame, keypoints, color=(0, 255, 255), radius=3, conf_threshold=0.3):
     """
     Vẽ keypoints lên frame
-    
-    Args:
         frame: Frame để vẽ
         keypoints: numpy array shape (num_keypoints, 3) với (x, y, confidence) hoặc (num_keypoints, 2) với (x, y)
         color: Màu keypoints (BGR)
@@ -1575,8 +1560,7 @@ def draw_hand_skeleton(frame, keypoints, color=(0, 255, 255), thickness=1, conf_
     - 17-20: Pinky (ngón út): 17=MCP, 18=PIP, 19=DIP, 20=Tip
     
     Connections này khớp với MediaPipe solutions.hands.HAND_CONNECTIONS
-    
-    Args:
+
         frame: Frame để vẽ
         keypoints: numpy array shape (21, 3) với (x, y, confidence) hoặc (21, 2) với (x, y)
         color: Màu đường nối (BGR)
@@ -1633,7 +1617,7 @@ def draw_hand_skeleton(frame, keypoints, color=(0, 255, 255), thickness=1, conf_
                     pt2 = (int(x2), int(y2))
                     cv2.line(frame, pt1, pt2, color, thickness)
 
-# ---------- Main Update Loop ----------
+# Main Update Loop
 def update_frame():
     global frame_count, total_objects, prev_display_time, prev_capture_time
     global latest_detection, current_photo
@@ -1681,7 +1665,7 @@ def update_frame():
         try:
             frame_w, frame_h = frame_original.shape[1], frame_original.shape[0]
         except (AttributeError, IndexError) as e:
-            print(f"⚠ Error getting frame dimensions: {e}")
+            print(f" Error getting frame dimensions: {e}")
             if root and not stop_flag.is_set():
                 root.after(10, update_frame)
             return
@@ -1776,7 +1760,7 @@ def update_frame():
         status_color = (0, 255, 0) if system_active else (0, 0, 255) # Green if Active, Red if Idle
         cv2.putText(annotated_frame, status_text, (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.8, status_color, 2)
         
-        # ========== XỬ LÝ KHI KHÔNG CÓ HAND ==========
+        #  XỬ LÝ KHI KHÔNG CÓ HAND 
         has_hand = result and result.hand_landmarks and len(result.hand_landmarks) > 0
         
         if not has_hand:
@@ -1855,7 +1839,7 @@ def update_frame():
                     if handedness_score < HANDEDNESS_SCORE_THRESHOLD:
                         continue
                     
-                    # ========== GESTURE CLASSIFICATION ==========
+                    #  ~~~~~~~~~~~~~~~~~~~~~~ GESTURE CLASSIFICATION ~~~~~~~~~~~~~~~~~~~~~~
                     # Chỉ predict gesture khi bounding box đã hợp lệ
                     
                     # FILTER: Kiểm tra orientation validity TRƯỚC khi predict
@@ -1992,7 +1976,7 @@ def update_frame():
                                             
                                     except Exception as e:
                                         print(f"MQTT Publish error: {e}")
-                    # ============================================
+                    # ~~~~~~~~~~~~~~~~~~~~~
 
                     color = get_track_color(hand_idx)  # dùng index tay làm ID tạm
 
@@ -2032,7 +2016,7 @@ def update_frame():
                     draw_keypoints(annotated_frame, landmarks_array, color, 3, conf_threshold=0.0)
 
             except Exception as e:
-                print(f"⚠ Error drawing MediaPipe results: {e}")
+                print(f" Error drawing MediaPipe results: {e}")
             
             # Cleanup voters cho hands không còn xuất hiện (xóa khỏi dict để tránh memory leak)
             # Đảm bảo cleanup ngay cả khi có exception trong quá trình xử lý
@@ -2185,7 +2169,7 @@ def update_frame():
                             metrics_labels[key].config(text=new_value)
                             cached_metrics_values[key] = new_value
         except Exception as e:
-            print(f"⚠ Error updating Tkinter UI: {e}")
+            print(f" Error updating Tkinter UI: {e}")
         
         # Print info (thống kê FPS / latency)
         if frame_count % PRINT_EVERY_N_FRAMES == 0 or frame_count <= 5:
@@ -2211,7 +2195,7 @@ def update_frame():
             root.after(delay, update_frame)
         
     except Exception as e:
-        print(f"✗ Error in update_frame: {e}")
+        print(f" Error in update_frame: {e}")
         if not stop_flag.is_set():
             root.after(10, update_frame)
 
@@ -2219,7 +2203,7 @@ def update_frame():
 root.after(10, update_frame)
 root.mainloop()
 
-# ---------- 5. Cleanup & Summary ----------
+# 5. Cleanup & Summary
 # Dừng tất cả threads
 stop_flag.set()
 
@@ -2264,7 +2248,7 @@ try:
     if mqtt_pub:
         mqtt_pub.disconnect()
 except Exception as e:
-    print(f"⚠ MQTT Disconnect error: {e}")
+    print(f" MQTT Disconnect error: {e}")
 
 # Cleanup Tkinter (nếu chưa được destroy)
 try:
