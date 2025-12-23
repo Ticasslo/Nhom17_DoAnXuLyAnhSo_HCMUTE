@@ -317,11 +317,6 @@ def predict_gesture(features_batch):
 
 # 2.2. Normalize Features Function
 def normalize_features(landmarks_array):
-    """
-    Normalize landmarks: relative + scale normalization + orientation features
-    Input: landmarks_array shape (21, 2) với (x, y) [đã normalized [0,1] từ MediaPipe]
-    Output: NUM_FEATURES features [x0, y0, x1, y1, ..., x20, y20, y_hand_x, y_hand_y, x_hand_x, x_hand_y] đã normalize (np.float32)
-    """
     landmarks = np.asarray(landmarks_array, dtype=np.float32)
     x_coords = landmarks[:, 0]
     y_coords = landmarks[:, 1]
@@ -578,10 +573,6 @@ except Exception as e:
 ema_state = {}
 
 def apply_ema_smoothing(hand_idx, current_landmarks, alpha=EMA_ALPHA):
-    """
-    Apply Exponential Moving Average smoothing to landmarks
-    EMA formula: smoothed_t = alpha * current + (1 - alpha) * smoothed_t-1
-    """
     if not ENABLE_EMA_SMOOTHING:
         return current_landmarks
     
@@ -753,10 +744,6 @@ def frame_grabber_thread():
 
 
 def hand_landmarker_thread():
-    """
-    Thread 2: Lấy frame từ queue, chạy MediaPipe Hand Landmarker (VIDEO mode)
-    và đẩy kết quả (keypoints + handedness) sang detection_queue.
-    """
     global queue_drop_count, is_paused
     
     print("  → HandLandmarker thread: MediaPipe Hand Landmarker (VIDEO mode)")
@@ -1560,7 +1547,6 @@ def draw_hand_skeleton(frame, keypoints, color=(0, 255, 255), thickness=1, conf_
     - 17-20: Pinky (ngón út): 17=MCP, 18=PIP, 19=DIP, 20=Tip
     
     Connections này khớp với MediaPipe solutions.hands.HAND_CONNECTIONS
-
         frame: Frame để vẽ
         keypoints: numpy array shape (21, 3) với (x, y, confidence) hoặc (21, 2) với (x, y)
         color: Màu đường nối (BGR)
